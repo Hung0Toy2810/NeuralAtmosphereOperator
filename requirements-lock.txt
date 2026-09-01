@@ -1,0 +1,11 @@
+# Audited development environment (2026-09-01).
+# Use the PyTorch wheel index appropriate for the target CUDA runtime.
+torch==2.13.0
+torch-harmonics==0.7.4
+numpy==1.26.4
+xarray==2026.7.0
+zarr==2.18.7
+dask[array]==2026.8.0
+gcsfs==2026.8.0
+pytest==9.1.1
+matplotlib==3.11.1

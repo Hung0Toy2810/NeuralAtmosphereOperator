@@ -1,0 +1,9 @@
+torch>=2.4
+torch-harmonics==0.7.4
+numpy>=1.26,<3
+xarray>=2024.6
+zarr>=2.18,<3
+dask[array]>=2024.6
+gcsfs>=2024.6
+pytest>=8
+matplotlib>=3.9

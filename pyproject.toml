@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neural-atmosphere-operator"
+version = "0.1.0"
+description = "Spherical Fourier neural operator pipeline for global weather forecasting"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.4",
+    # 0.8 changed the example SFNO API/block topology. Keep the scientifically
+    # audited implementation fixed; upgrades require a new numerical audit.
+    "torch-harmonics==0.7.4",
+    "numpy>=1.26,<3",
+    "xarray>=2024.6",
+    "zarr>=2.18,<3",
+    "dask[array]>=2024.6",
+    "gcsfs>=2024.6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "matplotlib>=3.9", "pyright>=1.1"]
+
+[tool.setuptools.packages.find]
+where = ["src", "."]
+include = ["neural_atmosphere_operator*", "configs*"]
+exclude = ["data*", "scripts*", "test*"]
+
+[tool.pyright]
+include = ["src", "configs", "scripts", "test"]
+extraPaths = ["src", "configs", "."]
