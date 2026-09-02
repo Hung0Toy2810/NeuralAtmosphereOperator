@@ -65,7 +65,12 @@ class DataPaths:
 class TrainingConfig:
     """Conservative defaults for the 12-year 0.5-degree SFNO corpus."""
 
-    epochs: int = 25
+    # Zero means no epoch limit. The run stops only by an external/manual
+    # signal; resume returns to the most recent completed epoch.
+    epochs: int = 0
+    # An infinite run still needs a finite cosine-decay horizon. After this
+    # many epochs the scheduler remains at min_learning_rate.
+    scheduler_epochs: int = 25
     batch_size: int = 4
     validation_batch_size: int = 1
     gradient_accumulation: int = 2
@@ -84,7 +89,8 @@ class TrainingConfig:
     # Training workers are recreated at epoch boundaries so checkpointed
     # sampler/worker RNG state produces the same next epoch after a restart.
     persistent_workers: bool = False
-    patience: int = 8
+    # Zero disables automatic early stopping for manually controlled runs.
+    patience: int = 0
     early_stopping_min_delta: float = 0.0
     terminal_loss_weight: float = 0.5
     rollout_discount: float = 1.0

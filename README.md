@@ -61,6 +61,13 @@ allocated/reserved CUDA measurement and must run on the target NVIDIA GPU.
 
 ## Recommended training curriculum
 
+The default stage has `epochs=0` and `patience=0`: it has no epoch limit and
+does not stop through early stopping. Stop it manually after inspecting the
+validation/rollout logs. The cosine scheduler still uses a finite 25-epoch
+horizon and then holds `min_learning_rate`; override that horizon with
+`--scheduler-epochs`. Passing a positive `--epochs` restores a finite run and,
+unless explicitly overridden, uses the same value as the scheduler horizon.
+
 Start with one-step training. Increase rollout length only after convergence,
 initializing a new optimizer stage from the previous best weights:
 
@@ -94,7 +101,13 @@ python scripts/train.py \
 
 Use `--resume` only to continue the exact same numerical trajectory. Use
 `--init-checkpoint` for a new curriculum stage; optimizer, scheduler and early
-stopping state intentionally restart.
+stopping state intentionally restart. A version-2 epoch-end checkpoint stores
+the model, complete AdamW state (`step`, `exp_avg`, `exp_avg_sq` and parameter
+groups), learning-rate scheduler, AMP loss scaler, completed-update counter,
+early-stopping state, Python/NumPy/PyTorch RNG and the training-loader generator.
+It is written atomically through `*.tmp` and then renamed. An interruption in
+the middle of an epoch therefore returns to the end of the last completed
+epoch, never to a partially accumulated gradient or a half-written checkpoint.
 
 The training loader asynchronously prepares up to `num_workers *
 prefetch_factor` batches while the accelerator processes the current batch.

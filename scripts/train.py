@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import itertools
 import json
 import math
 import sys
@@ -31,7 +32,7 @@ from neural_atmosphere_operator.models.loss import (
 from neural_atmosphere_operator.models.model import AtmosphereNeuralOperator
 from neural_atmosphere_operator.pipeline.checkpoint import (
     load_checkpoint,
-    restore_rng_state,
+    restore_training_state,
     save_checkpoint,
 )
 from neural_atmosphere_operator.pipeline.dependencies import (
@@ -85,7 +86,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-runtime-mismatch", action="store_true")
     parser.add_argument("--reset-early-stopping", action="store_true")
 
-    parser.add_argument("--epochs", type=int, default=defaults.epochs)
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=defaults.epochs,
+        help="Maximum epochs; 0 runs indefinitely until manually stopped",
+    )
+    parser.add_argument(
+        "--scheduler-epochs",
+        type=int,
+        help=(
+            "Cosine-decay horizon; defaults to --epochs for a finite run and "
+            f"{defaults.scheduler_epochs} for an unlimited run"
+        ),
+    )
     parser.add_argument("--batch-size", type=int, default=defaults.batch_size)
     parser.add_argument(
         "--validation-batch-size",
@@ -295,7 +309,6 @@ def same_model_architecture(
 
 def _validate_cli(args: argparse.Namespace) -> None:
     positive = (
-        args.epochs,
         args.batch_size,
         args.validation_batch_size,
         args.gradient_accumulation,
@@ -307,6 +320,10 @@ def _validate_cli(args: argparse.Namespace) -> None:
         raise ValueError(
             "positive training counts are required; history cannot be negative"
         )
+    if args.epochs < 0:
+        raise ValueError("epochs must be zero (unlimited) or positive")
+    if args.scheduler_epochs is not None and args.scheduler_epochs < 1:
+        raise ValueError("scheduler epochs must be positive")
     if args.warmup_epochs < 0 or args.patience < 0:
         raise ValueError("warmup epochs and patience cannot be negative")
     if not 0 < args.warmup_start_factor <= 1:
@@ -535,7 +552,7 @@ def main() -> None:
             raise ValueError("Checkpoint model architecture does not match this stage")
 
     model = build_model(model_config, device)
-    if checkpoint is not None:
+    if checkpoint is not None and args.init_checkpoint:
         model.load_state_dict(checkpoint["model_state"])
     optimizer = AdamW(
         model.parameters(),
@@ -544,7 +561,12 @@ def main() -> None:
         betas=(0.9, 0.95),
     )
     updates_per_epoch = math.ceil(len(train_loader) / args.gradient_accumulation)
-    total_updates = updates_per_epoch * args.epochs
+    scheduler_epochs = (
+        args.scheduler_epochs
+        if args.scheduler_epochs is not None
+        else (args.epochs if args.epochs > 0 else defaults.scheduler_epochs)
+    )
+    total_updates = updates_per_epoch * scheduler_epochs
     warmup_updates = min(
         updates_per_epoch * args.warmup_epochs,
         max(total_updates - 1, 0),
@@ -564,6 +586,7 @@ def main() -> None:
     resume_signature = {
         "stage_name": args.stage_name,
         "epochs": args.epochs,
+        "scheduler_epochs": scheduler_epochs,
         "batch_size": args.batch_size,
         "validation_batch_size": args.validation_batch_size,
         "gradient_accumulation": args.gradient_accumulation,
@@ -612,9 +635,9 @@ def main() -> None:
     }
 
     start_epoch = 0
+    completed_updates = 0
     best_loss = float("inf")
     epochs_without_improvement = 0
-    resume_rng_state = None
     if checkpoint is not None and args.resume:
         saved_training = checkpoint.get("training_config", {})
         mismatches = [
@@ -627,11 +650,20 @@ def main() -> None:
                 "Resume must preserve the numerical trajectory; mismatched: "
                 + ", ".join(mismatches)
             )
-        optimizer.load_state_dict(checkpoint["optimizer_state"])
-        scheduler.load_state_dict(checkpoint["scheduler_state"])
-        scaler.load_state_dict(checkpoint["scaler_state"])
-        train_generator.set_state(checkpoint["train_generator_state"].cpu())
+        restore_training_state(
+            checkpoint,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            scaler=scaler,
+            train_generator=train_generator,
+        )
         start_epoch = int(checkpoint["epoch"]) + 1
+        completed_updates = int(checkpoint["completed_updates"])
+        if scheduler.last_epoch != completed_updates:
+            raise ValueError(
+                "Checkpoint scheduler progress does not match completed_updates"
+            )
         best_loss = float(checkpoint["best_validation_loss"])
         epochs_without_improvement = int(checkpoint["epochs_without_improvement"])
         if checkpoint["early_stopped"]:
@@ -641,8 +673,7 @@ def main() -> None:
                     "--reset-early-stopping to continue intentionally"
                 )
             epochs_without_improvement = 0
-        resume_rng_state = checkpoint["rng_state"]
-    if start_epoch >= args.epochs:
+    if args.epochs > 0 and start_epoch >= args.epochs:
         raise ValueError("Checkpoint has already reached the requested epochs")
 
     history_path = run_dir / "history.csv"
@@ -696,10 +727,13 @@ def main() -> None:
         float(channel_weights.max()),
     )
 
-    if resume_rng_state is not None:
-        restore_rng_state(resume_rng_state)
     try:
-        for epoch in range(start_epoch, args.epochs):
+        epoch_iterator = (
+            range(start_epoch, args.epochs)
+            if args.epochs > 0
+            else itertools.count(start_epoch)
+        )
+        for epoch in epoch_iterator:
             started = time.perf_counter()
             model.train()
             optimizer.zero_grad(set_to_none=True)
@@ -767,6 +801,7 @@ def main() -> None:
                     )
                     if optimizer_ran:
                         scheduler.step()
+                        completed_updates += 1
                     optimizer.zero_grad(set_to_none=True)
                 train_loss_sum += float(loss.detach()) * size
                 train_samples += size
@@ -811,6 +846,7 @@ def main() -> None:
                 scaler=scaler,
                 train_generator=train_generator,
                 epoch=epoch,
+                completed_updates=completed_updates,
                 best_validation_loss=best_loss,
                 epochs_without_improvement=epochs_without_improvement,
                 early_stopped=early_stopped,
@@ -826,6 +862,7 @@ def main() -> None:
                     scaler=scaler,
                     train_generator=train_generator,
                     epoch=epoch,
+                    completed_updates=completed_updates,
                     best_validation_loss=best_loss,
                     epochs_without_improvement=epochs_without_improvement,
                     early_stopped=early_stopped,
@@ -914,6 +951,12 @@ def main() -> None:
             if early_stopped:
                 logger.info("Early stopping after %d stale epochs", args.patience)
                 break
+    except KeyboardInterrupt:
+        logger.warning(
+            "Training interrupted manually; resume from %s",
+            run_dir / "checkpoints" / "last.pt",
+        )
+        raise
     finally:
         train_dataset.close()
         valid_dataset.close()

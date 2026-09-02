@@ -76,6 +76,9 @@ def main() -> None:
         default=train_defaults.gradient_accumulation,
     )
     parser.add_argument("--epochs", type=int, default=train_defaults.epochs)
+    parser.add_argument(
+        "--scheduler-epochs", type=int, default=train_defaults.scheduler_epochs
+    )
     args = parser.parse_args()
     positive = (
         args.stride_hours,
@@ -87,11 +90,13 @@ def main() -> None:
         args.time_step,
         args.batch_size,
         args.gradient_accumulation,
-        args.epochs,
+        args.scheduler_epochs,
         *args.train_years,
     )
-    if min(positive) < 1 or args.history < 0:
-        parser.error("counts must be positive and history cannot be negative")
+    if min(positive) < 1 or args.history < 0 or args.epochs < 0:
+        parser.error(
+            "counts must be positive, epochs may be zero, and history cannot be negative"
+        )
 
     total_steps = count_timesteps(args.start_date, args.end_date, args.stride_hours)
     raw_per_step = args.channels * args.height * args.width * 4
@@ -155,10 +160,18 @@ def main() -> None:
         )
         mini_batches = math.ceil(samples / args.batch_size)
         updates = math.ceil(mini_batches / args.gradient_accumulation)
+        run_length = (
+            f"{updates * args.epochs:,} updates/{args.epochs} epochs"
+            if args.epochs > 0
+            else (
+                "unlimited epochs; "
+                f"cosine horizon={updates * args.scheduler_epochs:,} updates/"
+                f"{args.scheduler_epochs} epochs"
+            )
+        )
         print(
             f"  {years} year(s): {train_steps:,} timestamps, "
-            f"{samples:,} training windows, {updates:,} updates/epoch, "
-            f"{updates * args.epochs:,} updates/{args.epochs} epochs"
+            f"{samples:,} training windows, {updates:,} updates/epoch, {run_length}"
         )
     print(
         "Caution: six-hourly windows and neighboring grid cells are strongly "

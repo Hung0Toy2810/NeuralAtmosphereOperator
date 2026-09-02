@@ -63,6 +63,9 @@ def test_long_validation_and_test_ranges_have_four_rollout_starts() -> None:
     assert paths.split_time_range("test") == ("2019-01-17", "2019-02-16")
     assert TrainingConfig().validation_rollout_steps == 60
     assert TrainingConfig().validation_batch_size == 1
+    assert TrainingConfig().epochs == 0
+    assert TrainingConfig().scheduler_epochs == 25
+    assert TrainingConfig().patience == 0
     assert 64 - 60 == 4
     assert 124 - 120 == 4
 
@@ -154,6 +157,7 @@ def test_atomic_checkpoint_contains_resume_state(tmp_path: Path) -> None:
         scaler=scaler,
         train_generator=generator,
         epoch=3,
+        completed_updates=1,
         best_validation_loss=0.25,
         epochs_without_improvement=2,
         early_stopped=False,
@@ -163,6 +167,8 @@ def test_atomic_checkpoint_contains_resume_state(tmp_path: Path) -> None:
     checkpoint = load_checkpoint(path, torch.device("cpu"))
     assert checkpoint["version"] == CHECKPOINT_VERSION
     assert checkpoint["epoch"] == 3
+    assert checkpoint["completed_updates"] == 1
+    assert checkpoint["resume_boundary"] == "epoch_end"
     assert checkpoint["optimizer_state"]["state"]
     assert "rng_state" in checkpoint
     assert checkpoint["runtime"]["operator_source"].endswith("models.sfno")
