@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 import torch
 from torch import Tensor, nn
+from torch.amp.grad_scaler import GradScaler
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 
@@ -30,14 +31,14 @@ def _components(seed: int) -> tuple[
     nn.Module,
     AdamW,
     LambdaLR,
-    torch.amp.GradScaler,
+    GradScaler,
     torch.Generator,
 ]:
     torch.manual_seed(seed)
     model = nn.Sequential(nn.Linear(4, 8), nn.Dropout(0.25), nn.Linear(8, 2))
     optimizer = AdamW(model.parameters(), lr=2e-3, betas=(0.9, 0.95))
     scheduler = LambdaLR(optimizer, lambda update: 0.97**update)
-    scaler = torch.amp.GradScaler("cuda", enabled=False)
+    scaler = GradScaler("cuda", enabled=False)
     generator = torch.Generator().manual_seed(seed + 1)
     return model, optimizer, scheduler, scaler, generator
 
@@ -46,7 +47,7 @@ def _update(
     model: nn.Module,
     optimizer: AdamW,
     scheduler: LambdaLR,
-    scaler: torch.amp.GradScaler,
+    scaler: GradScaler,
     inputs: Tensor,
     targets: Tensor,
 ) -> None:

@@ -19,6 +19,7 @@ sys.path[:0] = [str(PROJECT_ROOT), str(PROJECT_ROOT / "src")]
 import numpy as np
 import torch
 from torch import Tensor
+from torch.amp.grad_scaler import GradScaler
 from torch.optim import AdamW
 
 from configs.model_config import AtmosphereModelConfig
@@ -564,7 +565,11 @@ def main() -> None:
     scheduler_epochs = (
         args.scheduler_epochs
         if args.scheduler_epochs is not None
-        else (args.epochs if args.epochs > 0 else defaults.scheduler_epochs)
+        else (
+            args.epochs
+            if args.epochs > 0
+            else TrainingConfig().scheduler_epochs
+        )
     )
     total_updates = updates_per_epoch * scheduler_epochs
     warmup_updates = min(
@@ -579,7 +584,7 @@ def main() -> None:
         min_learning_rate=args.min_learning_rate,
         base_learning_rate=args.learning_rate,
     )
-    scaler = torch.amp.GradScaler(
+    scaler = GradScaler(
         device.type,
         enabled=amp_enabled and args.amp_dtype == "float16",
     )

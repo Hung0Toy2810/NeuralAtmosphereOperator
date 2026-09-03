@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+from torch.amp.grad_scaler import GradScaler
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 
@@ -143,7 +144,7 @@ def test_atomic_checkpoint_contains_resume_state(tmp_path: Path) -> None:
     model = torch.nn.Linear(3, 2)
     optimizer = AdamW(model.parameters(), lr=1e-3)
     scheduler = LambdaLR(optimizer, lambda update: 0.9**update)
-    scaler = torch.amp.GradScaler("cuda", enabled=False)
+    scaler = GradScaler("cuda", enabled=False)
     generator = torch.Generator().manual_seed(123)
     model(torch.ones(1, 3)).square().mean().backward()
     optimizer.step()
