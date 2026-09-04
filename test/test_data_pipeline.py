@@ -96,6 +96,9 @@ def test_half_degree_regrid_uses_periodic_aligned_longitude_overlap():
 
 def test_download_contract_fingerprint_covers_semantic_configuration():
     config = WeatherBenchDownloadConfig()
+    assert config.start_date == "1995-01-01"
+    assert config.end_date == "2019-02-16"
+    assert config.output_zarr_path.endswith("era5_1995_2019_0p5deg_26ch.zarr")
     fingerprint = contract_fingerprint(download_contract(config))
     assert len(fingerprint) == 64
     assert contract_fingerprint(download_contract(config)) == fingerprint

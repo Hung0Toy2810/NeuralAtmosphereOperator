@@ -17,7 +17,7 @@ class AtmosphereModelConfig:
     The default is the locked compact SFNO-SC2-L6-E128 adapted to the selected
     0.5-degree grid. It
         follows the same SFNO family while reducing statistical capacity and
-        memory for this project's 26-channel, twelve-year dataset. It is an
+        memory for this project's 26-channel, twenty-four-year dataset. It is an
         adaptation, not an exact reproduction of Makani's SC3/73-channel setup. Residual
     prediction is applied by the project wrapper, not inside torch-harmonics.
     """

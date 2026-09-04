@@ -1,4 +1,4 @@
-"""Configuration for the 12-year, 0.5-degree ERA5 training corpus."""
+"""Configuration for the 24-year, 0.5-degree ERA5 training corpus."""
 
 from __future__ import annotations
 
@@ -67,8 +67,8 @@ class WeatherBenchDownloadConfig:
     zarr_url: str = DEFAULT_ZARR_URL
     surface_variables: tuple[str, ...] = DEFAULT_SURFACE_VARIABLES
     level_selections: tuple[tuple[str, tuple[int, ...]], ...] = DEFAULT_LEVEL_SELECTIONS
-    start_date: str = "2007-01-01"
-    # Train: 2007-2018; validation: 2019-01-01..16; test: 2019-01-17..02-16.
+    start_date: str = "1995-01-01"
+    # Train: 1995-2018; validation: 2019-01-01..16; test: 2019-01-17..02-16.
     # Sixteen validation days provide four independent UTC phases for a
     # 60-step (15-day) rollout.  The 31-day test range similarly provides the
     # initial state plus 120 six-hour targets for a complete 30-day rollout.
@@ -76,7 +76,7 @@ class WeatherBenchDownloadConfig:
     time_stride_hours: int = 6
     target_resolution_degrees: float = 0.5
     download_batch_days: int = 7
-    output_zarr_path: str = "data/dataset/era5_2007_2019_0p5deg_26ch.zarr"
+    output_zarr_path: str = "data/dataset/era5_1995_2019_0p5deg_26ch.zarr"
 
     def __post_init__(self) -> None:
         if not self.surface_variables and not self.level_selections:

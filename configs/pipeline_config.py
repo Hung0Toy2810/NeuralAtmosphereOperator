@@ -16,7 +16,7 @@ class DataPaths:
 
     @property
     def dataset(self) -> Path:
-        return self.root / "era5_2007_2019_0p5deg_26ch.zarr"
+        return self.root / "era5_1995_2019_0p5deg_26ch.zarr"
 
     @property
     def train(self) -> Path:
@@ -33,7 +33,7 @@ class DataPaths:
     def split_time_range(self, split: str) -> tuple[str, str]:
         """Return non-overlapping inclusive logical ranges in the single store."""
         ranges = {
-            "train": ("2007-01-01", "2018-12-31"),
+            "train": ("1995-01-01", "2018-12-31"),
             "valid": ("2019-01-01", "2019-01-16"),
             "test": ("2019-01-17", "2019-02-16"),
         }
@@ -63,7 +63,7 @@ class DataPaths:
 
 @dataclass(frozen=True, slots=True)
 class TrainingConfig:
-    """Conservative defaults for the 12-year 0.5-degree SFNO corpus."""
+    """Conservative defaults for the 24-year 0.5-degree SFNO corpus."""
 
     # Zero means no epoch limit. The run stops only by an external/manual
     # signal; resume returns to the most recent completed epoch.

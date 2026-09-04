@@ -1,7 +1,7 @@
 # NeuralAtmosphereOperator
 
 Global 0.5-degree ERA5 forecasting with NVIDIA's Spherical Fourier Neural
-Operator (SFNO). The selected corpus uses twelve training years and 26
+Operator (SFNO). The selected corpus uses twenty-four training years and 26
 prognostic channels; the compact model defaults to SFNO-SC2-L6-E128 with all
 180 modes of its internal 181x360 spherical grid retained.
 
@@ -14,7 +14,7 @@ parameter-count, checkpoint and rollout tests.
 
 ```text
 data/dataset/
-├── era5_2007_2019_0p5deg_26ch.zarr
+├── era5_1995_2019_0p5deg_26ch.zarr
 └── stats/
     ├── means.npy
     ├── stds.npy
@@ -46,11 +46,11 @@ contract was introduced must be preserved under another name or regenerated;
 it will not be resumed silently. Flattened stores also carry units and source
 metadata separately for every channel.
 
-One physical Zarr store is sliced chronologically in the loader, so no 300-GiB
-field data are duplicated. Training contains twelve complete calendar years
-(2007--2018). The first 16 days of 2019 are validation, and 2019-01-17 through
+One physical Zarr store is sliced chronologically in the loader, so field data
+are not duplicated. Training contains twenty-four complete calendar years
+(1995--2018). The first 16 days of 2019 are validation, and 2019-01-17 through
 2019-02-16 is an untouched 31-day test period. At six-hour cadence this gives
-17,532 training states, 64 validation states, and 124 test states. Validation
+35,064 training states, 64 validation states, and 124 test states. Validation
 supports four 60-step starts and 3/6/9/12/15-day milestone reports; test supports four 120-step start
 indices for a complete 30-day rollout.
 

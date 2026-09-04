@@ -160,7 +160,7 @@ def test_rollout_loss_uses_explicit_time_axis_when_batch_equals_steps():
     torch.testing.assert_close(time_first_loss, loss)
 
 
-def test_sfno_twelve_year_half_degree_defaults_and_makani_reference():
+def test_sfno_twenty_four_year_half_degree_defaults_and_makani_reference():
     config = AtmosphereModelConfig()
 
     assert config.img_size == (361, 720)

@@ -60,6 +60,8 @@ def test_warmup_cosine_schedule_hits_boundaries() -> None:
 
 def test_long_validation_and_test_ranges_have_four_rollout_starts() -> None:
     paths = DataPaths()
+    assert paths.dataset.name == "era5_1995_2019_0p5deg_26ch.zarr"
+    assert paths.split_time_range("train") == ("1995-01-01", "2018-12-31")
     assert paths.split_time_range("valid") == ("2019-01-01", "2019-01-16")
     assert paths.split_time_range("test") == ("2019-01-17", "2019-02-16")
     assert TrainingConfig().validation_rollout_steps == 60
