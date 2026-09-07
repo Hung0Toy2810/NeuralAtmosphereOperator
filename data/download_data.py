@@ -20,6 +20,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping, cast
+from uuid import uuid4
 
 import numpy as np
 import xarray as xr
@@ -254,7 +255,9 @@ def build_subset(
         "channel_metadata": "coordinates aligned with the channel dimension",
     }
     state = state.assign_coords(_channel_metadata(subset, config))
-    state = state.chunk({"time": 1, "channel": config.channel_count, "latitude": 361, "longitude": 720})
+    state = state.chunk(
+        {"time": 1, "channel": config.channel_count, "latitude": 361, "longitude": 720}
+    )
     result = state.to_dataset(name="state")
     result.attrs.update(
         source=config.zarr_url,
@@ -313,6 +316,23 @@ def _write_progress(
     os.replace(temporary, path)
 
 
+def _validate_timestamps(
+    dataset: xr.Dataset, config: WeatherBenchDownloadConfig
+) -> None:
+    """Require every requested forecast time, in order and without duplicates."""
+    expected = np.arange(
+        np.datetime64(config.start_date, "ns"),
+        np.datetime64(config.end_date, "ns") + np.timedelta64(1, "D"),
+        np.timedelta64(config.time_stride_hours, "h"),
+    )
+    if "time" not in dataset.coords or not np.array_equal(
+        dataset.time.values, expected
+    ):
+        raise ValueError(
+            "Dataset timestamps do not match the complete requested interval/cadence"
+        )
+
+
 def main(config: WeatherBenchDownloadConfig | None = None) -> None:
     config = config or WeatherBenchDownloadConfig()
     output_path = Path(config.output_zarr_path)
@@ -328,24 +348,59 @@ def main(config: WeatherBenchDownloadConfig | None = None) -> None:
 
     cursor = datetime.fromisoformat(config.start_date)
     committed_steps = 0
-    if partial_path.exists():
-        if not progress_path.is_file():
-            raise RuntimeError(
-                f"Partial store has no progress record; inspect it before removing: {partial_path}"
-            )
+    if partial_path.exists() and not progress_path.is_file():
+        raise RuntimeError(
+            f"Partial store has no progress record; inspect it before removing: {partial_path}"
+        )
+    if progress_path.is_file():
         progress = json.loads(progress_path.read_text(encoding="utf-8"))
-        partial_group = zarr.open_group(cast(Any, str(partial_path)), mode="r")
-        if partial_group.attrs.get("regridding_version") != REGRIDDING_VERSION:
-            raise RuntimeError(
-                "Partial store was created by an incompatible regridding "
-                "implementation. Preserve it for inspection and start a new "
-                "download path."
-            )
-        validate_resume_contract(progress, partial_group.attrs, config)
+        # Validate the journal before inspecting a possibly incomplete first write.
+        validate_resume_contract(
+            progress,
+            {
+                "download_contract_json": full_contract_json,
+                "download_contract_sha256": full_contract_fingerprint,
+            },
+            config,
+        )
         cursor = datetime.fromisoformat(str(progress["next_date"]))
         committed_steps = int(progress["timesteps"])
-        _truncate_partial_store(partial_path, committed_steps)
+        expected_steps = len(
+            np.arange(
+                np.datetime64(config.start_date),
+                np.datetime64(cursor),
+                np.timedelta64(config.time_stride_hours, "h"),
+            )
+        )
+        if (
+            cursor < datetime.fromisoformat(config.start_date)
+            or cursor > datetime.fromisoformat(config.end_date) + timedelta(days=1)
+            or committed_steps != expected_steps
+        ):
+            raise RuntimeError("Invalid download progress interval or timestep count")
+        if committed_steps == 0:
+            if partial_path.exists():
+                # Preserve incomplete metadata/chunks; restart the uncommitted batch.
+                os.replace(
+                    partial_path,
+                    partial_path.with_name(
+                        partial_path.name + ".interrupted-" + uuid4().hex
+                    ),
+                )
+        else:
+            partial_group = zarr.open_group(cast(Any, str(partial_path)), mode="r")
+            validate_resume_contract(progress, partial_group.attrs, config)
+            _truncate_partial_store(partial_path, committed_steps)
         print(f"Resuming at {cursor.date()} after {committed_steps:,} timesteps")
+
+    if committed_steps == 0:
+        _write_progress(
+            progress_path,
+            next_date=config.start_date,
+            timesteps=0,
+            contract=full_contract,
+            fingerprint=full_contract_fingerprint,
+        )
 
     final_day = datetime.fromisoformat(config.end_date)
     print(f"Opening {config.zarr_url}")
@@ -363,15 +418,14 @@ def main(config: WeatherBenchDownloadConfig | None = None) -> None:
                 end_date=batch_end.date().isoformat(),
             )
             subset = build_subset(batch_config, source)
+            _validate_timestamps(subset, batch_config)
             # Batch-local date bounds are an implementation detail. Persist the
             # complete requested contract on every append target.
             subset.attrs.update(
                 download_contract_json=full_contract_json,
                 download_contract_sha256=full_contract_fingerprint,
             )
-            print(
-                f"Writing {cursor.date()}..{batch_end.date()} to {partial_path}"
-            )
+            print(f"Writing {cursor.date()}..{batch_end.date()} to {partial_path}")
             if committed_steps == 0:
                 subset.to_zarr(
                     cast(Any, str(partial_path)), mode="w", consolidated=False
@@ -395,6 +449,8 @@ def main(config: WeatherBenchDownloadConfig | None = None) -> None:
     finally:
         source.close()
     zarr.consolidate_metadata(cast(Any, str(partial_path)))
+    with xr.open_zarr(str(partial_path), consolidated=True) as completed:
+        _validate_timestamps(completed, config)
     os.replace(partial_path, output_path)
     progress_path.unlink(missing_ok=True)
     print(f"Done: {output_path}")
@@ -406,9 +462,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start-date", default=defaults.start_date)
     parser.add_argument("--end-date", default=defaults.end_date)
     parser.add_argument("--output", default=defaults.output_zarr_path)
-    parser.add_argument(
-        "--batch-days", type=int, default=defaults.download_batch_days
-    )
+    parser.add_argument("--batch-days", type=int, default=defaults.download_batch_days)
     parser.add_argument(
         "--confirm-full-download",
         action="store_true",
