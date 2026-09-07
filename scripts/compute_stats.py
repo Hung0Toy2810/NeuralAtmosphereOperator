@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import hashlib
 import sys
+import os
+import tempfile
+from collections import deque
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +23,7 @@ from neural_atmosphere_operator.data.loader import (
     DEFAULT_SURFACE_VARS,
 )
 from neural_atmosphere_operator.data.normalization import latitude_cell_weights
+from neural_atmosphere_operator.pipeline.runtime import statistics_signature
 
 
 def spherical_mean_and_std(
@@ -26,20 +31,22 @@ def spherical_mean_and_std(
     latitude_weights: xr.DataArray,
 ) -> tuple[float, float]:
     """Compute population statistics with exact latitude-cell area weights."""
+    # The public helper only needs state moments; reuse a bounded two-pass
+    # reduction even for a single time slice.
     dimensions = ("time", "latitude", "longitude")
-    missing = set(dimensions).difference(field.dims)
-    if missing:
-        raise ValueError(f"Field {field.name!r} is missing dimensions {sorted(missing)}")
-    mean = field.weighted(latitude_weights).mean(dim=dimensions, skipna=False)
-    variance = ((field - mean) ** 2).weighted(latitude_weights).mean(
-        dim=dimensions,
-        skipna=False,
+    mean = (
+        field.astype("float64")
+        .weighted(latitude_weights)
+        .mean(dim=dimensions, skipna=False)
+        .compute()
     )
-    computed = xr.Dataset({"mean": mean, "variance": variance}).compute()
-    return (
-        float(computed["mean"].values),
-        float(np.sqrt(computed["variance"].values)),
+    variance = (
+        ((field.astype("float64") - mean) ** 2)
+        .weighted(latitude_weights)
+        .mean(dim=dimensions, skipna=False)
+        .compute()
     )
+    return float(mean), float(np.sqrt(variance))
 
 
 def positional_time_difference(field: xr.DataArray, time_step: int) -> xr.DataArray:
@@ -56,37 +63,60 @@ def spherical_channel_statistics(
     latitude_weights: xr.DataArray,
     time_step: int,
 ) -> xr.Dataset:
-    """Build one shared Dask graph for all statistics of a channel tensor.
+    """Stream joint-channel float64 Chan moments with O(stride * C * H * W) RAM.
 
-    The production Zarr store keeps all channels in the same time chunk.  A
-    channel-by-channel loop would therefore decompress that same chunk once per
-    channel. Computing the vector reductions together lets Dask share each read
-    across global, tendency and climatological statistics.
+    Each time slice is materialized separately. No global Dask reduction keeps
+    chunks alive across the entire corpus. Delta buffers preserve positional
+    stride; climatology and both moments share each decompression.
     """
     required = {"time", "channel", "latitude", "longitude"}
-    missing = required.difference(state.dims)
-    if missing:
-        raise ValueError(f"State tensor is missing dimensions {sorted(missing)}")
-    reductions = ("time", "latitude", "longitude")
-    mean = state.weighted(latitude_weights).mean(dim=reductions, skipna=False)
-    variance = ((state - mean) ** 2).weighted(latitude_weights).mean(
-        dim=reductions, skipna=False
-    )
-    delta = positional_time_difference(state, time_step)
-    delta_mean = delta.weighted(latitude_weights).mean(
-        dim=reductions, skipna=False
-    )
-    delta_variance = ((delta - delta_mean) ** 2).weighted(latitude_weights).mean(
-        dim=reductions, skipna=False
-    )
+    if set(state.dims) != required:
+        raise ValueError("State must have time/channel/latitude/longitude dimensions")
+    state = state.transpose("time", "channel", "latitude", "longitude")
+    if not 1 <= time_step < state.sizes["time"]:
+        raise ValueError("time_step requires at least one temporal difference")
+    weights = np.asarray(latitude_weights.values, dtype=np.float64)
+    weights = weights / weights.sum() / state.sizes["longitude"]
+    weight = weights[None, :, None]
+    channels = state.sizes["channel"]
+    means = [np.zeros(channels), np.zeros(channels)]
+    m2 = [np.zeros(channels), np.zeros(channels)]
+    counts = [0, 0]
+    climate = np.zeros(tuple(state.shape[1:]), dtype=np.float64)
+    previous = deque()
+    payload_hash = hashlib.sha256()
+
+    def update(values, branch):
+        mean = np.sum(values * weight, axis=(1, 2))
+        variance = np.sum((values - mean[:, None, None]) ** 2 * weight, axis=(1, 2))
+        counts[branch] += 1
+        difference = mean - means[branch]
+        means[branch] += difference / counts[branch]
+        m2[branch] += variance + difference**2 * (counts[branch] - 1) / counts[branch]
+
+    for index in range(state.sizes["time"]):
+        values = np.asarray(state.isel(time=index).values, dtype=np.float64)
+        if not np.isfinite(values).all():
+            raise ValueError(
+                f"Training data contains non-finite values at time index {index}"
+            )
+        payload_hash.update(values.astype("<f4").tobytes())
+        update(values, 0)
+        climate += (values - climate) / (index + 1)
+        if len(previous) == time_step:
+            update(values - previous.popleft(), 1)
+        previous.append(values)
+    coords = {name: state[name] for name in ("channel", "latitude", "longitude")}
     return xr.Dataset(
         {
-            "mean": mean,
-            "variance": variance,
-            "time_diff_mean": delta_mean,
-            "time_diff_variance": delta_variance,
-            "time_mean": state.mean(dim="time", skipna=False),
-        }
+            "mean": ("channel", means[0]),
+            "variance": ("channel", m2[0] / counts[0]),
+            "time_diff_mean": ("channel", means[1]),
+            "time_diff_variance": ("channel", m2[1] / counts[1]),
+            "time_mean": (("channel", "latitude", "longitude"), climate),
+        },
+        coords=coords,
+        attrs={"training_state_float32_sha256": payload_hash.hexdigest()},
     )
 
 
@@ -108,6 +138,10 @@ def main() -> None:
         raise ValueError("time-step must be at least 1")
     train_path = args.train_data.expanduser().resolve()
     output_dir = args.output_dir.expanduser().resolve()
+    if output_dir.exists():
+        raise FileExistsError(
+            f"Statistics bundles are immutable; choose a new output directory: {output_dir}"
+        )
     ds = xr.open_zarr(str(train_path), consolidated=True).sel(
         time=slice(args.train_start, args.train_end)
     )
@@ -118,6 +152,9 @@ def main() -> None:
     time_means: list[np.ndarray] = []
     names: list[str] = []
     units: list[str] = []
+    if ds.sizes["time"] <= args.time_step:
+        ds.close()
+        raise ValueError("Training split is empty or too short for time-step")
     first_time = str(ds.time.values[0])
     last_time = str(ds.time.values[-1])
     timesteps = int(ds.sizes["time"])
@@ -137,6 +174,7 @@ def main() -> None:
         raise ValueError("Training timestamps must be strictly increasing and regular")
     cadence_hours = float(time_differences[0] / 3_600_000_000_000)
     latitudes = np.asarray(ds.latitude.values, dtype=np.float64)
+    longitudes = np.asarray(ds.longitude.values, dtype=np.float64)
     area_weights = np.asarray(latitude_cell_weights(latitudes), dtype=np.float64)
     latitude_weights = xr.DataArray(
         area_weights,
@@ -148,69 +186,50 @@ def main() -> None:
             names = [str(name) for name in ds.channel.values]
             if "channel_units" not in ds.coords:
                 raise ValueError(
-                    "Flattened state is missing per-channel units; regenerate it "
-                    "with the current downloader before computing statistics"
+                    "Flattened state is missing per-channel units; regenerate with the current downloader"
                 )
             units = [str(unit) for unit in ds.channel_units.values]
-            if len(units) != len(names) or any(not unit.strip() for unit in units):
-                raise ValueError("channel_units must be non-empty and align with channel")
-            computed = spherical_channel_statistics(
-                ds["state"], latitude_weights, args.time_step
-            ).compute()
-            means.extend(np.asarray(computed["mean"].values).tolist())
-            stds.extend(np.sqrt(np.asarray(computed["variance"].values)).tolist())
-            time_diff_means.extend(
-                np.asarray(computed["time_diff_mean"].values).tolist()
-            )
-            time_diff_stds.extend(
-                np.sqrt(np.asarray(computed["time_diff_variance"].values)).tolist()
-            )
-            time_means.extend(np.asarray(computed["time_mean"].values))
-            for index, name in enumerate(names):
-                print(
-                    f"{name}: mean={means[index]:.7g} std={stds[index]:.7g} "
-                    f"delta_mean={time_diff_means[index]:.7g} "
-                    f"delta_std={time_diff_stds[index]:.7g}"
-                )
+            state = ds["state"]
         else:
             selections = [(name, ds[name]) for name in DEFAULT_SURFACE_VARS] + [
-                (f"{name}@{level}hPa", ds[name].sel(level=level))
+                (f"{name}@{level}hPa", ds[name].sel(level=level, drop=True))
                 for name, levels in DEFAULT_LEVEL_SPECS
                 for level in levels
             ]
-            for name, field in selections:
-                mean, std = spherical_mean_and_std(field, latitude_weights)
-                delta = positional_time_difference(field, args.time_step)
-                delta_mean, delta_std = spherical_mean_and_std(delta, latitude_weights)
-                time_mean = np.asarray(
-                    field.mean(dim="time", skipna=False).compute().values,
-                    dtype=np.float32,
-                )
-                means.append(mean)
-                stds.append(std)
-                time_diff_means.append(delta_mean)
-                time_diff_stds.append(delta_std)
-                time_means.append(time_mean)
-                names.append(name)
-                unit = str(
+            names = [name for name, _ in selections]
+            units = [
+                str(
                     field.attrs.get(
                         "units", "1" if field.name == "relative_humidity" else ""
                     )
                 )
-                if not unit.strip():
-                    raise ValueError(f"Field {name!r} is missing its physical unit")
-                units.append(unit)
-                print(
-                    f"{name}: mean={mean:.7g} std={std:.7g} "
-                    f"delta_mean={delta_mean:.7g} delta_std={delta_std:.7g}"
-                )
+                for _, field in selections
+            ]
+            state = xr.concat(
+                [field for _, field in selections],
+                dim=xr.IndexVariable("channel", names),
+            )
+        if len(units) != len(names) or any(not unit.strip() for unit in units):
+            raise ValueError("channel_units must be non-empty and align with channel")
+        computed = spherical_channel_statistics(state, latitude_weights, args.time_step)
+        means = np.asarray(computed["mean"]).tolist()
+        stds = np.sqrt(np.asarray(computed["variance"])).tolist()
+        time_diff_means = np.asarray(computed["time_diff_mean"]).tolist()
+        time_diff_stds = np.sqrt(np.asarray(computed["time_diff_variance"])).tolist()
+        time_means = list(np.asarray(computed["time_mean"]))
+        payload_sha256 = computed.attrs["training_state_float32_sha256"]
+        for index, name in enumerate(names):
+            print(
+                f"{name}: mean={means[index]:.7g} std={stds[index]:.7g} "
+                f"delta_mean={time_diff_means[index]:.7g} delta_std={time_diff_stds[index]:.7g}"
+            )
     finally:
         ds.close()
     means_array = np.asarray(means, dtype=np.float32)
     stds_array = np.asarray(stds, dtype=np.float32)
     time_diff_means_array = np.asarray(time_diff_means, dtype=np.float32)
     time_diff_stds_array = np.asarray(time_diff_stds, dtype=np.float32)
-    time_means_array = np.stack(time_means, axis=0)
+    time_means_array = np.stack(time_means, axis=0).astype(np.float32)
     arrays = (
         means_array,
         stds_array,
@@ -222,7 +241,15 @@ def main() -> None:
         raise ValueError("Training data contains non-finite values")
     if np.any(stds_array <= 0) or np.any(time_diff_stds_array <= 0):
         raise ValueError("Every training channel must have positive variance")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    destination = output_dir
+    if destination.exists():
+        raise FileExistsError(
+            f"Statistics bundles are immutable; choose a new output directory: {destination}"
+        )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    output_dir = Path(
+        tempfile.mkdtemp(prefix=destination.name + ".part-", dir=destination.parent)
+    )
     np.save(output_dir / "means.npy", means_array)
     np.save(output_dir / "stds.npy", stds_array)
     np.save(output_dir / "time_means.npy", time_means_array)
@@ -239,14 +266,27 @@ def main() -> None:
         json.dumps(
             {
                 "source": str(train_path),
+                "training_state_float32_sha256": payload_sha256,
+                "latitude": latitudes.astype(np.float32).tolist(),
+                "longitude": longitudes.astype(np.float32).tolist(),
+                "artifacts": {
+                    name: statistics_signature(output_dir / filename)["sha256"]
+                    for name, filename in {
+                        "means": "means.npy",
+                        "stds": "stds.npy",
+                        "climatology": "time_means.npy",
+                        "time_diff_stds": f"time_diff_stds_dt{args.time_step}.npy",
+                        "time_diff_means": f"time_diff_means_dt{args.time_step}.npy",
+                    }.items()
+                },
                 "first_time": first_time,
                 "last_time": last_time,
                 "timesteps": timesteps,
                 "channels": names,
                 "channel_units": units,
                 "spatial_weighting": "spherical_latitude_cell_area",
-                "statistics_version": 3,
-                "computation": "joint_channel_dask_graph",
+                "statistics_version": 4,
+                "computation": "streaming_joint_channel_float64_chan",
                 "climatology": "training_long_term_mean_by_grid_cell",
                 "time_difference_step": args.time_step,
                 "cadence_hours": cadence_hours,
@@ -256,7 +296,8 @@ def main() -> None:
         + "\n",
         encoding="utf-8",
     )
-    print(f"Statistics written to {output_dir}")
+    os.rename(output_dir, destination)
+    print(f"Statistics written to {destination}")
 
 
 if __name__ == "__main__":

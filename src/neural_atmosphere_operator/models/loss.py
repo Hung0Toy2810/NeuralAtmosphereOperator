@@ -6,6 +6,9 @@ Area weighting is derived from spherical latitude-cell boundaries.
 
 from __future__ import annotations
 
+from collections import OrderedDict
+import weakref
+
 from typing import Literal, Sequence, cast
 
 import torch
@@ -108,7 +111,7 @@ def makani_auto_channel_weights(
     return weights
 
 
-def _normalized_latitude_weights(
+def _uncached_latitude_weights(
     prediction: Tensor,
     latitudes: Tensor | Sequence[float] | None,
     eps: float,
@@ -142,6 +145,48 @@ def _normalized_latitude_weights(
         device=prediction.device, dtype=prediction.dtype
     )
     return (weights / weights.mean().clamp_min(eps)).view(1, 1, height, 1)
+
+
+# Fixed coordinates are reused at every lead. Bound retained device buffers and
+# use weak references to prevent object-id reuse from returning another grid.
+_AREA_CACHE = OrderedDict()
+
+
+def _normalized_latitude_weights(prediction, latitudes, eps):
+    if isinstance(latitudes, Tensor) and latitudes.is_inference():
+        return _uncached_latitude_weights(prediction, latitudes, eps)
+    if isinstance(latitudes, Tensor):
+        key = (
+            id(latitudes),
+            latitudes._version,
+            prediction.shape[-2],
+            str(prediction.device),
+            prediction.dtype,
+            eps,
+        )
+        owner = weakref.ref(latitudes)
+    else:
+        coordinates = None if latitudes is None else tuple(float(v) for v in latitudes)
+        key = (
+            coordinates,
+            prediction.shape[-2],
+            str(prediction.device),
+            prediction.dtype,
+            eps,
+        )
+        owner = None
+    cached = _AREA_CACHE.get(key)
+    if cached is not None and (owner is None or cached[0]() is latitudes):
+        _AREA_CACHE.move_to_end(key)
+        return cached[1]
+    # Build ordinary tensors even if first requested during inference: they
+    # remain usable by a later training forward/backward.
+    with torch.inference_mode(False):
+        value = _uncached_latitude_weights(prediction, latitudes, eps)
+    _AREA_CACHE[key] = (owner, value)
+    if len(_AREA_CACHE) > 32:
+        _AREA_CACHE.popitem(last=False)
+    return value
 
 
 def latitude_weighted_mse(
@@ -180,7 +225,7 @@ def latitude_weighted_mse(
     ).flatten()
     if channel_weight_tensor.numel() != prediction.shape[1]:
         raise ValueError(
-            "channel_weights must contain exactly " f"{prediction.shape[1]} values"
+            f"channel_weights must contain exactly {prediction.shape[1]} values"
         )
     if (
         not torch.isfinite(channel_weight_tensor).all()
@@ -235,12 +280,12 @@ class ChannelRelativeAtmosphereLoss(nn.Module):
             raise ValueError("prediction and target must share shape [B, C, H, W]")
 
         weights = _normalized_latitude_weights(prediction, self.latitudes, self.eps)
-        diff_norm = torch.sqrt(
-            ((prediction - target).square() * weights).sum(dim=(-2, -1))
+        diff_norm = torch.linalg.vector_norm(
+            (prediction - target) * weights.sqrt(), dim=(-2, -1)
         )
-        tar_norm = torch.sqrt((target.square() * weights).sum(dim=(-2, -1))).clamp_min(
-            self.eps
-        )
+        tar_norm = torch.linalg.vector_norm(
+            target * weights.sqrt(), dim=(-2, -1)
+        ).clamp_min(self.eps)
         rel = diff_norm / tar_norm
 
         per_channel = rel.mean(dim=0)
@@ -355,6 +400,12 @@ class CombinedAtmosphereLoss(nn.Module):
             if channel_weights is None
             else torch.as_tensor(channel_weights, dtype=torch.float32).flatten()
         )
+        if weights is not None and (
+            not torch.isfinite(weights).all()
+            or (weights < 0).any()
+            or weights.sum() <= 0
+        ):
+            raise ValueError("channel_weights must be finite, non-negative and nonzero")
         self.register_buffer("channel_weights", weights)
         self.loss_scaler = LossScaler() if use_loss_scaler else None
         self.spectral_loss = (
@@ -365,12 +416,17 @@ class CombinedAtmosphereLoss(nn.Module):
         scaled_prediction = (
             self.loss_scaler(prediction) if self.loss_scaler is not None else prediction
         )
-        spatial_mse = latitude_weighted_mse(
-            scaled_prediction,
-            target,
-            self.latitudes,
-            channel_weights=cast(Tensor | None, self.channel_weights),
-        )
+        if prediction.shape != target.shape or prediction.ndim != 4:
+            raise ValueError("prediction and target must share [B, C, H, W]")
+        area = _normalized_latitude_weights(prediction, self.latitudes, 1e-8)
+        per_channel = ((scaled_prediction - target).square() * area).mean(dim=(0, 2, 3))
+        if self.channel_weights is None:
+            spatial_mse = per_channel.mean()
+        else:
+            channel_weights = cast(Tensor, self.channel_weights)
+            if channel_weights.numel() != prediction.shape[1]:
+                raise ValueError("channel_weights must align with prediction channels")
+            spatial_mse = (per_channel * channel_weights.to(prediction)).sum()
         if self.spectral_loss is not None and self.spectral_weight > 0.0:
             spec = self.spectral_loss(prediction, target)
             return spatial_mse + self.spectral_weight * spec
@@ -387,8 +443,8 @@ class RolloutLoss(nn.Module):
         time_dim: Literal[0, 1] = 1,
     ) -> None:
         super().__init__()
-        if not 0.0 <= discount_factor <= 1.0:
-            raise ValueError("discount_factor must be in [0, 1]")
+        if not 0.0 < discount_factor <= 1.0:
+            raise ValueError("discount_factor must be in (0, 1]")
         if time_dim not in (0, 1):
             raise ValueError("time_dim must be 0 or 1")
         self.base_loss = (

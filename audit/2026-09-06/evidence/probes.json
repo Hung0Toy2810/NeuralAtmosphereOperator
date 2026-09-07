@@ -1,0 +1,112 @@
+{
+  "relative_loss_at_perfect_prediction": {
+    "loss": 0.0,
+    "finite_gradient": false,
+    "nan_count": 80
+  },
+  "nonfinite_default_optimizer_step": {
+    "preclip_norm": NaN,
+    "parameter_finite": false
+  },
+  "complex_flag": {
+    "parameters_identical": true,
+    "outputs_identical": true,
+    "spectral_dtype": "torch.complex64"
+  },
+  "degree1_rotation_counterexample": {
+    "K_z_max": 0.0,
+    "K_rotated_z_max": 0.9999999403953552,
+    "real_kernel_identity_error": 2.384185791015625e-07,
+    "sht_roundtrip_error": 2.384185791015625e-07
+  },
+  "one_layer_layer_norm": {
+    "rejected": true,
+    "error": "Given normalized_shape=[5, 8], expected input with shape [*, 5, 8], but got input of size[1, 8, 13, 24]"
+  },
+  "scale1_grid_conversion": {
+    "scale_residual": false
+  },
+  "gradient_coverage": {
+    "tensors_without_gradient": [],
+    "all_gradients_finite": true,
+    "degree_zero_imaginary_gradient_max": 0.0
+  },
+  "model_directional_derivative": {
+    "autograd": 0.022356919944286346,
+    "finite_difference": 0.022351741790771484,
+    "absolute_error": 5.1781535148620605e-06
+  },
+  "weighted_mse_gradcheck": {
+    "passed": true
+  },
+  "loss_scaler_gradcheck": {
+    "passed": false,
+    "expected": "Custom backward is not derivative of identity forward"
+  },
+  "checkpoint_gradient_equivalence": {
+    "loss_error": 0.0,
+    "gradient_max_error": 0.0
+  },
+  "model_basic_inputs": {
+    "train_eval_max_error": 0.0,
+    "zero_output_max": 0.0,
+    "constant_output_finite": true,
+    "constant_spatial_std": 1.675281286239624
+  },
+  "synthetic_one_sample_overfit": {
+    "updates": 150,
+    "initial_loss": 1.4773712158203125,
+    "final_loss": 0.005778894294053316,
+    "ratio": 0.003911606123207549
+  },
+  "synthetic_rollout_120": {
+    "lead_rms_finite": [
+      [
+        1,
+        1.0068752765655518,
+        true
+      ],
+      [
+        4,
+        1.0601011514663696,
+        true
+      ],
+      [
+        20,
+        12.934157371520996,
+        true
+      ],
+      [
+        60,
+        7867.26806640625,
+        true
+      ],
+      [
+        120,
+        68914224.0,
+        true
+      ]
+    ],
+    "qualification": "Toy fitted map, not atmospheric skill or stability evidence"
+  },
+  "resume_warmup_change": {
+    "checked_in_signature": false,
+    "uninterrupted_next_lr": 0.00037,
+    "resumed_changed_next_lr": 0.00093
+  },
+  "dask_cache_16": {
+    "input_bytes": 39936,
+    "peak_cached_array_bytes": 82648,
+    "ratio": 2.069511217948718
+  },
+  "dask_cache_64": {
+    "input_bytes": 159744,
+    "peak_cached_array_bytes": 319832,
+    "ratio": 2.0021534455128207
+  },
+  "dask_cache_256": {
+    "input_bytes": 638976,
+    "peak_cached_array_bytes": 1278360,
+    "ratio": 2.0006385216346154
+  }
+}

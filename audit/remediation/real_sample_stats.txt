@@ -1,0 +1,27 @@
+10m_u_component_of_wind: mean=-0.3421458 std=5.20294 delta_mean=-0.03854219 delta_std=2.12562
+10m_v_component_of_wind: mean=-0.3421211 std=4.346071 delta_mean=-0.08382892 delta_std=2.241007
+2m_temperature: mean=285.6689 std=15.84997 delta_mean=0.2892785 delta_std=2.4182
+surface_pressure: mean=98556.24 std=6610.76 delta_mean=0.3212226 delta_std=233.8025
+mean_sea_level_pressure: mean=101165.4 std=1193.135 delta_mean=-1.096625 delta_std=247.2622
+total_column_water_vapour: mean=23.28297 std=16.90347 delta_mean=0.04084699 delta_std=2.956792
+geopotential@1000hPa: mean=947.4604 std=935.5956 delta_mean=-0.2999156 delta_std=200.7551
+geopotential@850hPa: mean=14198.34 std=1158.664 delta_mean=-2.492317 delta_std=181.9018
+geopotential@500hPa: mean=55352.53 std=2709.544 delta_mean=-8.379097 delta_std=211.4139
+geopotential@250hPa: mean=103350.2 std=4585.841 delta_mean=-14.1252 delta_std=275.9733
+geopotential@50hPa: mean=200624.2 std=2941.298 delta_mean=-20.62531 delta_std=217.423
+u_component_of_wind@1000hPa: mean=-0.3463748 std=5.842703 delta_mean=-0.05124598 delta_std=2.333224
+u_component_of_wind@850hPa: mean=1.065076 std=8.249603 delta_mean=-0.07631106 delta_std=2.840739
+u_component_of_wind@500hPa: mean=7.326324 std=12.423 delta_mean=-0.1522434 delta_std=3.605796
+u_component_of_wind@250hPa: mean=14.67258 std=19.47334 delta_mean=-0.1103892 delta_std=5.15632
+v_component_of_wind@1000hPa: mean=-0.3746484 std=4.873804 delta_mean=-0.08644884 delta_std=2.469816
+v_component_of_wind@850hPa: mean=-0.3324016 std=5.494034 delta_mean=-0.07715549 delta_std=3.067538
+v_component_of_wind@500hPa: mean=0.1590049 std=7.913444 delta_mean=0.1211358 delta_std=4.315838
+v_component_of_wind@250hPa: mean=0.3884346 std=12.82749 delta_mean=0.00356761 delta_std=6.081754
+temperature@850hPa: mean=280.1664 std=12.24919 delta_mean=-0.0429693 delta_std=1.428182
+temperature@500hPa: mean=257.9024 std=11.31648 delta_mean=-0.02417069 delta_std=1.208557
+temperature@250hPa: mean=225.7016 std=6.83406 delta_mean=-0.04608235 delta_std=1.363098
+temperature@100hPa: mean=204.8733 std=12.20953 delta_mean=-0.02421603 delta_std=1.007209
+specific_humidity@1000hPa: mean=0.008991194 std=0.005815611 delta_mean=4.149154e-05 delta_std=0.0007055786
+specific_humidity@850hPa: mean=0.005708035 std=0.004272452 delta_mean=1.171901e-05 delta_std=0.001260274
+relative_humidity@500hPa: mean=0.3680524 std=0.2716296 delta_mean=-0.0001885198 delta_std=0.1814251
+Statistics written to /private/var/folders/2n/f20_1_jd7bjgp25m_p5shyb40000gn/T/nao-real-pilot-t2pd1e36/stats

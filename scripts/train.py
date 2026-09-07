@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 import csv
 import itertools
-import json
 import math
+import shutil
 import sys
 import time
 from dataclasses import dataclass
@@ -42,6 +42,7 @@ from neural_atmosphere_operator.pipeline.dependencies import (
 )
 from neural_atmosphere_operator.pipeline.forecast import (
     autoregressive_predictions,
+    lazy_target_provider,
     rollout_loss,
 )
 from neural_atmosphere_operator.pipeline.runtime import (
@@ -58,6 +59,11 @@ from neural_atmosphere_operator.pipeline.runtime import (
     save_json,
     seed_everything,
     statistics_signature,
+)
+from neural_atmosphere_operator.pipeline.contracts import (
+    forecast_contract,
+    validate_global_grid,
+    validate_statistics_bundle,
 )
 from neural_atmosphere_operator.pipeline.schedule import (
     create_warmup_cosine_scheduler,
@@ -181,6 +187,11 @@ def parse_args() -> argparse.Namespace:
         help="Optional Gaussian noise in normalized input space (training only)",
     )
 
+    parser.add_argument(
+        "--stabilize-sht-constants",
+        action=argparse.BooleanOptionalAction,
+        default=model.stabilize_sht_constants,
+    )
     parser.add_argument("--embed-dim", type=int, default=model.embed_dim)
     parser.add_argument("--num-layers", type=int, default=model.num_layers)
     parser.add_argument("--scale-factor", type=int, default=model.scale_factor)
@@ -193,6 +204,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--pos-embed", choices=("none", "lat"), default=model.pos_embed)
     parser.add_argument("--max-samples", type=int)
+    parser.add_argument(
+        "--max-validation-samples",
+        type=int,
+        default=32,
+        help="Evenly spaced initialization panel; fixed across model candidates",
+    )
+    parser.add_argument(
+        "--validation-num-workers",
+        type=int,
+        default=0,
+        help="Separate worker budget for large future-target windows",
+    )
+    parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--spatial-crop", type=int, nargs=2, metavar=("H", "W"))
     parser.add_argument(
         "--allow-overlapping-splits",
@@ -253,32 +277,40 @@ def validate(
     loss_fn: Callable[[Tensor, Tensor], Tensor],
 ) -> ValidationSummary:
     model.eval()
-    step_loss_sums = [0.0] * steps
-    step_mse_sums = [0.0] * steps
+    reduction_dtype = torch.float32 if device.type == "mps" else torch.float64
+    step_loss_sums = torch.zeros(steps, device=device, dtype=reduction_dtype)
+    step_mse_sums = torch.zeros_like(step_loss_sums)
     sample_count = 0
     for raw_batch in loader:
-        batch = move_batch(raw_batch, device)
+        batch = move_batch(raw_batch, device, keep_targets_cpu=True)
         with amp_context(device, amp, amp_dtype):
-            pairs = autoregressive_predictions(model, batch, steps)
+            pairs = autoregressive_predictions(
+                model,
+                batch,
+                steps,
+                target_provider=lazy_target_provider(loader.dataset, raw_batch),
+            )
             for lead, (prediction, target) in enumerate(pairs):
                 lead_loss = loss_fn(prediction, target)
-                size = batch["input"].shape[0]
-                step_loss_sums[lead] += float(lead_loss) * size
-                step_mse_sums[lead] += (
-                    float(
-                        latitude_weighted_mse(
-                            prediction.float(),
-                            target.float(),
-                            latitudes,
-                        )
+                if not torch.isfinite(lead_loss).all():
+                    raise FloatingPointError(
+                        f"Non-finite validation loss at lead {lead + 1}"
                     )
+                size = batch["input"].shape[0]
+                step_loss_sums[lead] += lead_loss * size
+                step_mse_sums[lead] += (
+                    latitude_weighted_mse(prediction.float(), target.float(), latitudes)
                     * size
                 )
         size = batch["input"].shape[0]
         sample_count += size
-    denominator = max(sample_count, 1)
-    step_losses = tuple(value / denominator for value in step_loss_sums)
-    lead_rmse = tuple(math.sqrt(value / denominator) for value in step_mse_sums)
+    if sample_count < 1:
+        raise ValueError("Validation requires at least one sample")
+    denominator = sample_count
+    if not torch.isfinite(step_mse_sums).all():
+        raise FloatingPointError("Validation metric reductions overflowed")
+    step_losses = tuple((step_loss_sums / denominator).cpu().tolist())
+    lead_rmse = tuple((step_mse_sums / denominator).sqrt().cpu().tolist())
     mean_loss = sum(step_losses) / len(step_losses)
     final_loss = step_losses[-1]
     selection = (
@@ -309,6 +341,10 @@ def same_model_architecture(
 
 
 def _validate_cli(args: argparse.Namespace) -> None:
+    if args.amp_dtype == "float16" and not args.no_amp:
+        raise ValueError(
+            "FP16 GradScaler with complex spectral gradients is unsupported by this training profile; use bfloat16 or --no-amp"
+        )
     positive = (
         args.batch_size,
         args.validation_batch_size,
@@ -364,6 +400,7 @@ def main() -> None:
     logger = setup_logger(log_file=run_dir / "train.log")
     seed_everything(args.seed)
     device = choose_device(args.device)
+    torch.use_deterministic_algorithms(args.deterministic)
     runtime = validate_supported_runtime(device)
     amp_enabled = not args.no_amp and device.type == "cuda"
     paths = DataPaths(args.data_dir.expanduser().resolve())
@@ -406,7 +443,14 @@ def main() -> None:
         rollout_steps=args.validation_rollout_steps,
         batch_size=args.validation_batch_size,
         data_path=args.valid_data,
-        **common_loader,
+        **{
+            **common_loader,
+            "max_samples": args.max_validation_samples,
+            "sample_selection": "evenly_spaced",
+            "num_workers": args.validation_num_workers,
+            "prefetch_factor": 1,
+            "lazy_targets": True,
+        },
     )
     if any(not unit.strip() for unit in train_dataset.channel_units):
         raise ValueError(
@@ -415,34 +459,20 @@ def main() -> None:
         )
     if train_dataset.channel_units != valid_dataset.channel_units:
         raise ValueError("Train and validation channel units must match")
-    stats_metadata_path = means_path.expanduser().resolve().parent / "stats.json"
-    if stats_metadata_path.exists():
-        stats_metadata = json.loads(stats_metadata_path.read_text(encoding="utf-8"))
-        if (
-            Path(stats_metadata["source"]).expanduser().resolve()
-            != train_dataset.data_path
-            or stats_metadata.get("first_time") != train_dataset.first_time
-            or stats_metadata.get("last_time") != train_dataset.last_time
-            or tuple(stats_metadata.get("channels", ())) != train_dataset.channel_names
-            or tuple(stats_metadata.get("channel_units", ()))
-            != train_dataset.channel_units
-            or stats_metadata.get("spatial_weighting") != "spherical_latitude_cell_area"
-            or stats_metadata.get("cadence_hours") != train_dataset.cadence_hours
-            or (
-                args.temp_diff_normalization
-                and stats_metadata.get("time_difference_step") != args.time_step
-            )
-        ):
-            raise ValueError("Normalization metadata does not match the training split")
-    else:
-        logger.warning(
-            "stats.json is missing; train-only provenance of normalization "
-            "statistics cannot be verified"
-        )
+    statistic_paths = {
+        "means": means_path,
+        "stds": stds_path,
+        "climatology": climatology_path,
+    }
+    if args.temp_diff_normalization:
+        statistic_paths["time_diff_stds"] = time_diff_stds_path
+    validate_statistics_bundle(train_dataset, statistic_paths, args.time_step)
     if train_dataset.spatial_shape != valid_dataset.spatial_shape:
         raise ValueError("Train and validation grids must match")
     if train_dataset.cadence_hours != valid_dataset.cadence_hours:
         raise ValueError("Train and validation temporal cadence must match")
+    if not np.array_equal(train_dataset.longitudes, valid_dataset.longitudes):
+        raise ValueError("Train and validation longitude coordinates must match")
     if not np.array_equal(train_dataset.latitudes, valid_dataset.latitudes):
         raise ValueError("Train and validation latitude coordinates must match")
     split_overlap = np.datetime64(train_dataset.last_time) >= np.datetime64(
@@ -455,23 +485,12 @@ def main() -> None:
         )
     if split_overlap:
         logger.warning("Train/validation overlap enabled for a diagnostic run")
-    if crop is None:
-        pole_coordinates = np.abs(train_dataset.latitudes[[0, -1]])
-        if not np.allclose(pole_coordinates, 90.0, atol=1e-4):
-            raise ValueError("SFNO training grid must include both poles")
-        longitude_step = float(np.diff(train_dataset.longitudes).mean())
-        if not math.isclose(
-            longitude_step * len(train_dataset.longitudes),
-            360.0,
-            rel_tol=1e-5,
-            abs_tol=1e-4,
-        ):
-            raise ValueError("SFNO longitude grid must cover exactly 360 degrees")
-    else:
-        logger.warning(
-            "Spatial crop is a geometry-breaking diagnostic mode, not a "
-            "scientifically valid SFNO training configuration"
+    if crop is not None:
+        raise ValueError(
+            "Spatial cropping is incompatible with spherical forecasting; use a globally regridded diagnostic store"
         )
+    validate_global_grid(train_dataset)
+    validate_global_grid(valid_dataset)
 
     channels = train_dataset.config.channel_count
     model_config = AtmosphereModelConfig(
@@ -485,6 +504,7 @@ def main() -> None:
         drop_path_rate=args.drop_path_rate,
         hard_thresholding_fraction=args.hard_thresholding_fraction,
         pos_embed=args.pos_embed,
+        stabilize_sht_constants=args.stabilize_sht_constants,
     )
     latitudes = torch.as_tensor(train_dataset.latitudes, device=device)
     global_stds = np.load(stds_path)
@@ -565,11 +585,7 @@ def main() -> None:
     scheduler_epochs = (
         args.scheduler_epochs
         if args.scheduler_epochs is not None
-        else (
-            args.epochs
-            if args.epochs > 0
-            else TrainingConfig().scheduler_epochs
-        )
+        else (args.epochs if args.epochs > 0 else TrainingConfig().scheduler_epochs)
     )
     total_updates = updates_per_epoch * scheduler_epochs
     warmup_updates = min(
@@ -599,6 +615,13 @@ def main() -> None:
         "weight_decay": args.weight_decay,
         "min_learning_rate": args.min_learning_rate,
         "warmup_updates": warmup_updates,
+        "warmup_start_factor": args.warmup_start_factor,
+        "max_samples": args.max_samples,
+        "max_validation_samples": args.max_validation_samples,
+        "validation_num_workers": args.validation_num_workers,
+        "deterministic": args.deterministic,
+        "forecast_contract": forecast_contract(train_dataset, args.time_step),
+        "diagnostic_run": bool(args.allow_overlapping_splits),
         "total_updates": total_updates,
         "gradient_clip": args.gradient_clip,
         "rollout_steps": args.rollout_steps,
@@ -686,6 +709,28 @@ def main() -> None:
         raise FileExistsError(
             f"{history_path} exists; choose a new run directory or resume"
         )
+    if args.resume:
+        for ledger in (history_path, run_dir / "validation_by_lead.csv"):
+            if ledger.exists():
+                with ledger.open(newline="") as file:
+                    reader = csv.DictReader(file)
+                    fields = reader.fieldnames
+                    if fields is None:
+                        raise ValueError(f"History ledger has no header: {ledger}")
+                    rows = [row for row in reader if int(row["epoch"]) <= start_epoch]
+                shutil.copy2(
+                    ledger,
+                    ledger.with_name(ledger.name + f".before-resume-{time.time_ns()}"),
+                )
+                with ledger.open("w", newline="") as file:
+                    writer = csv.DictWriter(file, fieldnames=fields)
+                    writer.writeheader()
+                    writer.writerows(rows)
+        for stale in (run_dir / "validation").glob("epoch_*.json"):
+            if int(stale.stem.split("_")[-1]) > start_epoch:
+                stale.rename(
+                    stale.with_name(stale.name + f".before-resume-{time.time_ns()}")
+                )
     training_config = vars(args).copy()
     training_config.update(resume_signature)
     save_json(
@@ -784,13 +829,22 @@ def main() -> None:
                         accumulation_steps=args.gradient_accumulation,
                     )
                     scaled_loss = loss * (size / bucket_samples)
+                if not torch.isfinite(loss.detach()).all():
+                    optimizer.zero_grad(set_to_none=True)
+                    raise FloatingPointError(
+                        f"Non-finite training loss at epoch {epoch}, batch {batch_index}; last checkpoint preserved"
+                    )
                 cast(Tensor, scaler.scale(scaled_loss)).backward()
                 should_step = batch_index + 1 == bucket_start + bucket_size
                 if should_step:
                     scaler.unscale_(optimizer)
-                    preclip_norm = float(torch.nn.utils.clip_grad_norm_(
-                        model.parameters(), args.gradient_clip
-                    ))
+                    preclip_norm = float(
+                        torch.nn.utils.clip_grad_norm_(
+                            model.parameters(),
+                            args.gradient_clip,
+                            error_if_nonfinite=True,
+                        )
+                    )
                     if math.isfinite(preclip_norm):
                         gradient_norm_sum += preclip_norm
                         gradient_norm_max = max(gradient_norm_max, preclip_norm)
@@ -815,9 +869,7 @@ def main() -> None:
             train_loss = train_loss_sum / max(train_samples, 1)
             training_seconds = time.perf_counter() - started
             data_wait_fraction = data_wait_seconds / max(training_seconds, 1e-9)
-            mean_gradient_norm = gradient_norm_sum / max(
-                gradient_norm_measurements, 1
-            )
+            mean_gradient_norm = gradient_norm_sum / max(gradient_norm_measurements, 1)
             gradient_clip_fraction = clipped_updates / max(
                 gradient_norm_measurements, 1
             )

@@ -93,15 +93,12 @@ def projected_full_grid_parameters(embed_dim: int, num_layers: int) -> int:
     internal_height = (config.img_size[0] - 1) // config.scale_factor + 1
     internal_width = config.img_size[1] // config.scale_factor
     modes = int(
-        min(internal_height, internal_width // 2)
-        * config.hard_thresholding_fraction
+        min(internal_height, internal_width // 2) * config.hard_thresholding_fraction
     )
     hidden = 2 * embed_dim
     spectral = num_layers * embed_dim * embed_dim * modes
     mlp = num_layers * (embed_dim * hidden + hidden + hidden * embed_dim)
-    projections = (
-        config.in_channels * embed_dim + embed_dim * config.out_channels
-    )
+    projections = config.in_channels * embed_dim + embed_dim * config.out_channels
     norms = num_layers * 4 * embed_dim
     return spectral + mlp + projections + norms
 
@@ -118,6 +115,8 @@ def benchmark_profile(
     device: torch.device,
     seed: int,
 ) -> dict[str, float | int | str]:
+    if not 1 <= batch_size <= states.shape[0] - 2:
+        raise ValueError("Training must leave at least one held-out transition")
     seed_everything(seed)
     height, width = states.shape[-2:]
     config = AtmosphereModelConfig(
@@ -185,7 +184,7 @@ def benchmark_profile(
         result["mps_allocated_gib_after_update"] = (
             torch.mps.current_allocated_memory() / 2**30
         )
-    del optimizer, model, inputs, targets, validation_input, validation_target
+    del optimizer, inputs, targets, validation_input, validation_target
     if device.type == "mps":
         torch.mps.empty_cache()
     return result
@@ -228,8 +227,8 @@ def main() -> None:
 
     data_path = args.data.expanduser().resolve()
     states, latitudes = load_real_states(data_path, args.height, args.width)
-    if args.batch_size > states.shape[0] - 1:
-        parser.error("batch-size exceeds the number of one-step sample pairs")
+    if args.batch_size > states.shape[0] - 2:
+        parser.error("batch-size must leave the final transition outside training")
     # Fit normalization strictly on states participating in the training
     # transitions. The final held-out target must not influence statistics.
     training_states = states[: args.batch_size + 1]

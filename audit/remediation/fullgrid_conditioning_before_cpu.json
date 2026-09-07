@@ -1,0 +1,51 @@
+{
+  "device": "cpu",
+  "torch": "2.13.0",
+  "config": {
+    "img_size": [
+      361,
+      720
+    ],
+    "in_channels": 26,
+    "out_channels": 26,
+    "scale_factor": 2,
+    "embed_dim": 128,
+    "num_layers": 6,
+    "activation_function": "gelu",
+    "normalization_layer": "instance_norm",
+    "use_mlp": true,
+    "mlp_ratio": 2.0,
+    "drop_rate": 0.0,
+    "drop_path_rate": 0.0,
+    "hard_thresholding_fraction": 1.0,
+    "use_complex_kernels": true,
+    "operator_type": "driscoll-healy",
+    "grid": "equiangular",
+    "grid_internal": "legendre-gauss",
+    "pos_embed": "none",
+    "use_residual_connection": true,
+    "initialization": "torch_harmonics_native"
+  },
+  "seed": 42,
+  "probes": {
+    "zero": {
+      "finite": true,
+      "spatial_std_mean": 0.0,
+      "rms": 0.0,
+      "seconds": 2.0789367079996737
+    },
+    "constant": {
+      "finite": true,
+      "spatial_std_mean": 2.2109243869781494,
+      "rms": 2.5032849311828613,
+      "seconds": 1.9457384580018697
+    },
+    "near_constant": {
+      "finite": true,
+      "spatial_std_mean": 2.320183753967285,
+      "rms": 2.5718398094177246,
+      "seconds": 2.034421000000293
+    }
+  },
+  "peak_process_rss_gib": 1.9168243408203125
+}

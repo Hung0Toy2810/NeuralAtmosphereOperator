@@ -5,12 +5,11 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence, TypedDict
+from typing import TypedDict
 
 import numpy as np
 import torch
 import xarray as xr
-import zarr
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
@@ -33,7 +32,8 @@ class AtmosphereSample(TypedDict):
 
     input: Tensor  # [C_in, H, W] where C_in = (history + 1) * C
     target: Tensor  # [rollout_steps, C_out, H, W]
-    time_index: Tensor  # [1] scalar index of base time t
+    time_index: Tensor  # scalar index of base time t
+    target_time_indices: Tensor  # [rollout_steps], used for lazy verification
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,8 +55,15 @@ class AtmosphereDatasetConfig:
     noise_std: float = 0.0
     spatial_crop: tuple[int, int] | None = None
     max_samples: int | None = None
+    sample_selection: str = "first"
+    require_targets: bool = True
+    lazy_targets: bool = False
 
     def __post_init__(self) -> None:
+        if self.max_samples is not None and self.max_samples < 1:
+            raise ValueError("max_samples must be positive")
+        if self.sample_selection not in {"first", "evenly_spaced"}:
+            raise ValueError("Unsupported sample_selection")
         if self.history < 0:
             raise ValueError("history cannot be negative")
         if self.rollout_steps < 1:
@@ -111,17 +118,22 @@ class AtmosphereZarrDataset(Dataset[AtmosphereSample]):
 
         # Cache for worker-local zarr/xarray handles
         self._worker_ds: xr.Dataset | None = None
-        self._worker_zarr: zarr.Group | None = None
 
     def _inspect_dataset(self) -> None:
-        ds = self._select_time_range(xr.open_zarr(str(self.data_path), consolidated=True))
+        ds = self._select_time_range(
+            xr.open_zarr(str(self.data_path), consolidated=True)
+        )
         try:
             if "state" in ds:
-                if "channel" not in ds.state.dims:
-                    raise ValueError("state array must have a channel dimension")
+                if set(ds.state.dims) != {"time", "channel", "latitude", "longitude"}:
+                    raise ValueError(
+                        "state dimensions must be time/channel/latitude/longitude"
+                    )
                 stored_channels = tuple(str(value) for value in ds.channel.values)
                 if stored_channels != self.config.channel_names:
-                    raise ValueError("Stored state channels do not match configured channels")
+                    raise ValueError(
+                        "Stored state channels do not match configured channels"
+                    )
                 self.channel_units = self._string_channel_coordinate(
                     ds, "channel_units", stored_channels, fallback=""
                 )
@@ -147,9 +159,10 @@ class AtmosphereZarrDataset(Dataset[AtmosphereSample]):
                         stored_channels
                     )
                 source = str(ds.attrs.get("source", ""))
-                if source.startswith("gs://weatherbench2/") and int(
-                    ds.attrs.get("regridding_version", -1)
-                ) != 2:
+                if (
+                    source.startswith("gs://weatherbench2/")
+                    and int(ds.attrs.get("regridding_version", -1)) != 2
+                ):
                     raise ValueError(
                         "WeatherBench2 state store uses an unaudited regridding "
                         "version; regenerate it with the current downloader"
@@ -159,19 +172,25 @@ class AtmosphereZarrDataset(Dataset[AtmosphereSample]):
                 required_variables = self.config.surface_variables + tuple(
                     variable for variable, _ in self.config.level_selections
                 )
-                missing_variables = [name for name in required_variables if name not in ds]
+                missing_variables = [
+                    name for name in required_variables if name not in ds
+                ]
                 if missing_variables:
-                    raise ValueError(f"Dataset is missing variables: {missing_variables}")
+                    raise ValueError(
+                        f"Dataset is missing variables: {missing_variables}"
+                    )
                 self._state_layout = False
-                metadata = [
-                    (name, None) for name in self.config.surface_variables
-                ] + [
+                metadata = [(name, None) for name in self.config.surface_variables] + [
                     (variable, level)
                     for variable, levels in self.config.level_selections
                     for level in levels
                 ]
                 self.channel_units = tuple(
-                    str(ds[variable].attrs.get("units", "1" if variable == "relative_humidity" else ""))
+                    str(
+                        ds[variable].attrs.get(
+                            "units", "1" if variable == "relative_humidity" else ""
+                        )
+                    )
                     for variable, _ in metadata
                 )
                 self.channel_long_names = tuple(
@@ -273,7 +292,11 @@ class AtmosphereZarrDataset(Dataset[AtmosphereSample]):
 
         # Compute valid sample count
         context = self.config.history * self.config.time_step
-        horizon = self.config.rollout_steps * self.config.time_step
+        horizon = (
+            self.config.rollout_steps * self.config.time_step
+            if self.config.require_targets
+            else 0
+        )
         valid_count = max(0, self.total_timesteps - context - horizon)
 
         if valid_count == 0:
@@ -286,6 +309,11 @@ class AtmosphereZarrDataset(Dataset[AtmosphereSample]):
             self.sample_count = min(valid_count, self.config.max_samples)
         else:
             self.sample_count = valid_count
+        self.sample_indices = (
+            np.linspace(0, valid_count - 1, self.sample_count, dtype=np.int64)
+            if self.config.sample_selection == "evenly_spaced"
+            else np.arange(self.sample_count, dtype=np.int64)
+        )
 
     @staticmethod
     def _string_channel_coordinate(
@@ -338,7 +366,9 @@ class AtmosphereZarrDataset(Dataset[AtmosphereSample]):
         h, w = self.spatial_shape
         if self._state_layout:
             return np.asarray(
-                ds["state"].isel(
+                ds["state"]
+                .transpose("time", "channel", "latitude", "longitude")
+                .isel(
                     time=t_idx,
                     latitude=slice(0, h),
                     longitude=slice(0, w),
@@ -349,7 +379,12 @@ class AtmosphereZarrDataset(Dataset[AtmosphereSample]):
 
         # 1. Surface variables: [1, H, W]
         for var in self.config.surface_variables:
-            arr = np.asarray(ds[var].isel(time=t_idx)[:h, :w], dtype=np.float32)
+            arr = np.asarray(
+                ds[var]
+                .transpose("time", "latitude", "longitude")
+                .isel(time=t_idx)[:h, :w],
+                dtype=np.float32,
+            )
             channel_slices.append(arr[None, ...])
 
         # 2. Upper-air variables: [len(levels), H, W]. WeatherBench/Zarr
@@ -358,6 +393,7 @@ class AtmosphereZarrDataset(Dataset[AtmosphereSample]):
         for var, levels in self.config.level_selections:
             arr = np.asarray(
                 ds[var]
+                .transpose("time", "level", "latitude", "longitude")
                 .sel(level=list(levels))
                 .isel(
                     time=t_idx,
@@ -380,7 +416,7 @@ class AtmosphereZarrDataset(Dataset[AtmosphereSample]):
 
         ds = self._get_dataset()
         step = self.config.time_step
-        base_t = self.config.history * step + index
+        base_t = self.config.history * step + int(self.sample_indices[index])
 
         # Extract history inputs [t - history * step, ..., t]
         input_timesteps: list[np.ndarray] = []
@@ -402,14 +438,25 @@ class AtmosphereZarrDataset(Dataset[AtmosphereSample]):
 
         # Extract rollout targets [t + 1 * step, ..., t + rollout * step]
         target_timesteps: list[np.ndarray] = []
-        for r_step in range(1, self.config.rollout_steps + 1):
+        for r_step in range(
+            1,
+            self.config.rollout_steps + 1
+            if self.config.require_targets and not self.config.lazy_targets
+            else 1,
+        ):
             t = base_t + r_step * step
             target_data = self._read_timestep_channels(ds, t)
             target_data = self.normalizer.normalize(target_data)
             target_timesteps.append(target_data)
 
         # Target tensor of shape [rollout_steps, C, H, W]
-        model_target = np.stack(target_timesteps, axis=0)
+        model_target = (
+            np.stack(target_timesteps, axis=0)
+            if target_timesteps
+            else np.empty(
+                (0, self.config.channel_count, *self.spatial_shape), dtype=np.float32
+            )
+        )
 
         return {
             "input": torch.from_numpy(
@@ -419,6 +466,15 @@ class AtmosphereZarrDataset(Dataset[AtmosphereSample]):
                 np.ascontiguousarray(model_target, dtype=np.float32)
             ),
             "time_index": torch.tensor(base_t, dtype=torch.long),
+            "target_time_indices": torch.tensor(
+                [
+                    base_t + lead * step
+                    for lead in range(1, self.config.rollout_steps + 1)
+                ]
+                if self.config.require_targets
+                else [],
+                dtype=torch.long,
+            ),
         }
 
 

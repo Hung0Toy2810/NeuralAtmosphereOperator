@@ -30,4 +30,15 @@ exclude = ["data*", "scripts*", "test*"]
 
 [tool.pyright]
 include = ["src", "configs", "scripts", "test"]
+exclude = [
+    "audit",
+    "data/dataset",
+    "**/__pycache__",
+    "**/.pytest_cache",
+    "**/.venv",
+]
+# Audit harnesses are immutable evidence, while editable packages outside this
+# repository are dependencies. Pylance should report diagnostics only for the
+# application, configuration, scripts and regression tests listed above.
+ignore = ["audit", "../neuraloperator"]
 extraPaths = ["src", "configs", "."]

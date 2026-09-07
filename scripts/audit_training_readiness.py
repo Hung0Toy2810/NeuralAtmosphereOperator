@@ -63,7 +63,7 @@ def main() -> None:
         "--train-years",
         type=int,
         nargs="+",
-        default=(4, 8, 12),
+        default=(4, 8, 12, 24),
         help="Training-window lengths to compare",
     )
     parser.add_argument("--rollout-steps", type=int, default=1)

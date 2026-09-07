@@ -1,0 +1,11 @@
+{
+  "tensor_elements": 18099200,
+  "real_scalars": 35793920,
+  "parameter_bytes": 143175680,
+  "buffer_bytes": 140486400,
+  "modes": [
+    180,
+    180
+  ],
+  "trainable_tensors": 50
+}

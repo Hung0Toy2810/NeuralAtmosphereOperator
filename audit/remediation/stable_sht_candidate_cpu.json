@@ -1,0 +1,12 @@
+{
+  "random_output_max_error": 2.002716064453125e-05,
+  "random_output_rmse": 2.924442469520727e-06,
+  "zero": {
+    "spatial_std": 0.0,
+    "rms": 0.0
+  },
+  "constant": {
+    "spatial_std": 0.0,
+    "rms": 1.100018858909607
+  }
+}

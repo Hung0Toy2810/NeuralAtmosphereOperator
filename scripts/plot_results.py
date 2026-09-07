@@ -31,22 +31,32 @@ def main() -> None:
     run_dir = args.run_dir.expanduser().resolve()
     output = (
         args.output_dir.expanduser().resolve()
-        if args.output_dir else run_dir / "figures"
+        if args.output_dir
+        else run_dir / "figures"
     )
     output.mkdir(parents=True, exist_ok=True)
     history_path = run_dir / "history.csv"
     if history_path.exists():
         history = read_csv(history_path)
         figure, axis = plt.subplots(figsize=(8, 4.5))
-        axis.plot(history["epoch"], history["train_loss"], label="Train")
-        axis.plot(history["epoch"], history["validation_loss"], label="Validation")
+        axis.plot(
+            history["epoch"], history["train_loss"], label="Training rollout objective"
+        )
+        axis.plot(
+            history["epoch"],
+            history["validation_loss"],
+            label="Validation horizon selection score",
+        )
         axis.set(xlabel="Epoch", ylabel="Loss", title="SFNO training history")
         axis.set_yscale("log")
         axis.grid(alpha=0.25)
         lr_axis = axis.twinx()
         lr_axis.plot(
-            history["epoch"], history["learning_rate"],
-            color="tab:gray", linestyle="--", label="Learning rate",
+            history["epoch"],
+            history["learning_rate"],
+            color="tab:gray",
+            linestyle="--",
+            label="Learning rate",
         )
         lr_axis.set_ylabel("Learning rate")
         lines = axis.lines + lr_axis.lines
@@ -57,7 +67,8 @@ def main() -> None:
 
     evaluation = (
         args.evaluation_dir.expanduser().resolve()
-        if args.evaluation_dir else run_dir / "evaluation_test"
+        if args.evaluation_dir
+        else run_dir / "evaluation_test"
     )
     metrics_path = evaluation / "metrics_by_lead.csv"
     if metrics_path.exists():
@@ -66,8 +77,10 @@ def main() -> None:
         axes[0].plot(metrics["lead_hours"], metrics["normalized_rmse"], marker="o")
         axes[0].set(xlabel="Lead time (hours)", ylabel="Normalized RMSE")
         axes[1].plot(
-            metrics["lead_hours"], metrics["normalized_acc"],
-            marker="o", color="tab:green",
+            metrics["lead_hours"],
+            metrics["normalized_acc"],
+            marker="o",
+            color="tab:green",
         )
         axes[1].set(xlabel="Lead time (hours)", ylabel="ACC", ylim=(-1, 1))
         for axis in axes:

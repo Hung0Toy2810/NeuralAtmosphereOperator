@@ -9,20 +9,18 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from neural_atmosphere_operator.data.normalization import latitude_cell_weights
+from neural_atmosphere_operator.models.loss import _normalized_latitude_weights
 
 
 @dataclass(slots=True)
 class LeadMetricAccumulator:
-    normalized_squared_error: float = 0.0
-    normalized_absolute_error: float = 0.0
-    normalized_weight: float = 0.0
-    samples: int = 0
-    physical_squared_error: np.ndarray | None = None
-    channel_weight: np.ndarray | None = None
-    channel_acc_sum: np.ndarray | None = None
-    channel_acc_count: np.ndarray | None = None
+    """Keep small channel reductions on-device until a report is requested."""
 
+    samples: int = 0
+    _totals: Tensor | None = None
+    _host: np.ndarray | None = None
+
+    @torch.no_grad()
     def update(
         self,
         prediction: Tensor,
@@ -33,102 +31,105 @@ class LeadMetricAccumulator:
     ) -> None:
         if prediction.shape != target.shape or prediction.ndim != 4:
             raise ValueError("prediction and target must share [B, C, H, W]")
-        latitude = torch.as_tensor(
-            latitudes, device=prediction.device, dtype=prediction.dtype
-        )
-        area = latitude_cell_weights(latitude).view(1, 1, -1, 1)
-        weights = torch.broadcast_to(area, prediction.shape)
-        error = prediction - target
-        physical_error = error * channel_stds
-        self.normalized_squared_error += float((error.square() * weights).sum())
-        self.normalized_absolute_error += float((error.abs() * weights).sum())
-        self.normalized_weight += float(weights.sum())
-
-        channel_reductions = (0, 2, 3)
-        physical_squared_error = (
-            (physical_error.square() * weights)
-            .sum(dim=channel_reductions)
-            .double()
-            .cpu()
-            .numpy()
-        )
-        channel_weight = weights.sum(dim=channel_reductions).double().cpu().numpy()
+        if not torch.isfinite(prediction).all() or not torch.isfinite(target).all():
+            raise FloatingPointError(
+                "Metrics require finite prediction and target fields"
+            )
+        if not torch.isfinite(channel_stds).all() or (channel_stds <= 0).any():
+            raise ValueError("Channel standard deviations must be finite and positive")
         if normalized_climatology is None:
             raise ValueError(
                 "normalized_climatology is required for scientifically valid ACC"
             )
-        climatology = normalized_climatology.to(
-            device=prediction.device, dtype=prediction.dtype
+        climate = normalized_climatology.to(prediction)
+        if climate.ndim == 3:
+            climate = climate.unsqueeze(0)
+        if climate.shape[1:] != prediction.shape[1:] or climate.shape[0] not in (
+            1,
+            prediction.shape[0],
+        ):
+            raise ValueError("Climatology must match prediction [C, H, W] and batch")
+        area = _normalized_latitude_weights(prediction, latitudes, 1e-8)
+        weights = torch.broadcast_to(area, prediction.shape)
+        error = prediction - target
+        physical_error = error * channel_stds
+        a, b = prediction - climate, target - climate
+        cross = (a * b * weights).sum(dim=(2, 3))
+        denominator = torch.sqrt(
+            (a.square() * weights).sum(dim=(2, 3))
+            * (b.square() * weights).sum(dim=(2, 3))
         )
-        if climatology.ndim == 3:
-            climatology = climatology.unsqueeze(0)
-        if climatology.shape[1:] != prediction.shape[1:]:
-            raise ValueError("Climatology must match prediction [C, H, W]")
-        if climatology.shape[0] not in (1, prediction.shape[0]):
-            raise ValueError("Climatology batch must be one or match prediction")
-        prediction_anomaly = prediction - climatology
-        target_anomaly = target - climatology
-        # ACC is a spatial correlation for each forecast initialization and
-        # channel.  Average those correlations afterwards; pooling anomaly
-        # energies over the batch would incorrectly give energetic weather
-        # states more influence than quiet ones.
-        spatial_reductions = (2, 3)
-        cross = (prediction_anomaly * target_anomaly * weights).sum(
-            dim=spatial_reductions
-        )
-        pred_energy = (prediction_anomaly.square() * weights).sum(
-            dim=spatial_reductions
-        )
-        target_energy = (target_anomaly.square() * weights).sum(
-            dim=spatial_reductions
-        )
-        acc_denominator = torch.sqrt(pred_energy * target_energy)
-        valid_acc = acc_denominator > 1e-12
+        valid = denominator > 1e-12
         sample_acc = torch.where(
-            valid_acc,
-            cross / acc_denominator.clamp_min(1e-12),
-            torch.zeros_like(cross),
+            valid, cross / denominator.clamp_min(1e-12), torch.zeros_like(cross)
         )
-        acc_sum = sample_acc.sum(dim=0).double().cpu().numpy()
-        acc_count = valid_acc.sum(dim=0).double().cpu().numpy()
-        if self.physical_squared_error is None:
-            self.physical_squared_error = np.zeros_like(physical_squared_error)
-            self.channel_weight = np.zeros_like(channel_weight)
-            self.channel_acc_sum = np.zeros_like(acc_sum)
-            self.channel_acc_count = np.zeros_like(acc_count)
-        assert self.channel_weight is not None
-        assert self.channel_acc_sum is not None
-        assert self.channel_acc_count is not None
-        self.physical_squared_error += physical_squared_error
-        self.channel_weight += channel_weight
-        self.channel_acc_sum += acc_sum
-        self.channel_acc_count += acc_count
+        spatial_weight = weights.sum(dim=(2, 3), keepdim=True)
+        pred_mean = (prediction * weights).sum(
+            dim=(2, 3), keepdim=True
+        ) / spatial_weight
+        truth_mean = (target * weights).sum(dim=(2, 3), keepdim=True) / spatial_weight
+        # ACC remains a mean of per-initialization spatial correlations, never
+        # a correlation pooled across weather cases.
+        reductions = torch.stack(
+            [
+                (error.square() * weights).sum(dim=(0, 2, 3)),
+                (error.abs() * weights).sum(dim=(0, 2, 3)),
+                weights.sum(dim=(0, 2, 3)),
+                (physical_error.square() * weights).sum(dim=(0, 2, 3)),
+                sample_acc.sum(dim=0),
+                valid.sum(dim=0).to(prediction.dtype),
+                (physical_error * weights).sum(dim=(0, 2, 3)),
+                ((prediction - pred_mean).square() * weights).sum(dim=(0, 2, 3)),
+                ((target - truth_mean).square() * weights).sum(dim=(0, 2, 3)),
+            ]
+        )
+        # MPS does not support float64. CPU/CUDA accumulate small reductions
+        # in float64, preserving the established per-initialization averaging.
+        reductions = reductions.to(
+            torch.float32 if prediction.device.type == "mps" else torch.float64
+        )
+        if self._totals is None:
+            self._totals = torch.zeros_like(reductions)
+        if (
+            self._totals.shape != reductions.shape
+            or self._totals.device != reductions.device
+        ):
+            raise ValueError("Accumulator channel count/device must remain fixed")
+        self._totals += reductions
         self.samples += prediction.shape[0]
+        self._host = None
+
+    def _snapshot(self) -> np.ndarray:
+        if self.samples < 1 or self._totals is None:
+            raise ValueError("Cannot report metrics for an empty evaluation")
+        if self._host is None:
+            self._host = self._totals.cpu().numpy().astype(np.float64)
+        if not np.isfinite(self._host).all():
+            raise FloatingPointError("Metric reductions overflowed")
+        return self._host
 
     def _channel_acc(self) -> np.ndarray:
-        if self.channel_acc_sum is None:
-            return np.asarray([], dtype=np.float64)
-        assert self.channel_acc_count is not None
+        data = self._snapshot()
         return np.divide(
-            self.channel_acc_sum,
-            self.channel_acc_count,
-            out=np.full_like(self.channel_acc_sum, np.nan),
-            where=self.channel_acc_count > 0,
+            data[4], data[5], out=np.full_like(data[4], np.nan), where=data[5] > 0
         )
 
     def result(self, lead: int, time_step_hours: float = 6.0) -> dict[str, float | int]:
-        denominator = max(self.normalized_weight, 1e-12)
-        channel_acc = self._channel_acc()
-        finite = channel_acc[np.isfinite(channel_acc)]
-        normalized_mse = self.normalized_squared_error / denominator
+        data = self._snapshot()
+        weight = float(data[2].sum())
+        acc = self._channel_acc()
+        finite = acc[np.isfinite(acc)]
+        mse = float(data[0].sum()) / weight
         return {
             "lead": lead,
             "lead_hours": lead * time_step_hours,
-            "normalized_mse": normalized_mse,
-            "normalized_rmse": math.sqrt(normalized_mse),
-            "normalized_mae": self.normalized_absolute_error / denominator,
+            "normalized_mse": mse,
+            "normalized_rmse": math.sqrt(mse),
+            "normalized_mae": float(data[1].sum()) / weight,
             "normalized_acc": float(finite.mean()) if finite.size else float("nan"),
             "samples": self.samples,
+            "acc_valid_channels": int(finite.size),
+            "acc_total_channels": int(acc.size),
         }
 
     def channel_results(
@@ -138,25 +139,28 @@ class LeadMetricAccumulator:
         time_step_hours: float = 6.0,
         units: tuple[str, ...] | None = None,
     ) -> list[dict[str, float | int | str]]:
-        if self.physical_squared_error is None or self.channel_weight is None:
-            return []
-        if units is not None and len(units) != len(names):
-            raise ValueError("units must align with channel names")
+        data = self._snapshot()
+        if len(names) != data.shape[1] or (
+            units is not None and len(units) != len(names)
+        ):
+            raise ValueError("names and units must align with channel count")
         acc = self._channel_acc()
         return [
             {
                 "lead": lead,
                 "lead_hours": lead * time_step_hours,
                 "channel": channel,
-                "variable": names[channel],
-                "unit": units[channel] if units is not None else "",
-                "physical_rmse": math.sqrt(
-                    float(self.physical_squared_error[channel])
-                    / max(float(self.channel_weight[channel]), 1e-12)
-                ),
+                "variable": name,
+                "unit": units[channel] if units else "",
+                "physical_rmse": math.sqrt(float(data[3, channel] / data[2, channel])),
                 "normalized_acc": float(acc[channel]),
+                "acc_valid_initializations": int(data[5, channel]),
+                "physical_bias": float(data[6, channel] / data[2, channel]),
+                "spatial_variance_ratio": float(data[7, channel] / data[8, channel])
+                if data[8, channel] > 0
+                else float("nan"),
             }
-            for channel in range(len(names))
+            for channel, name in enumerate(names)
         ]
 
 

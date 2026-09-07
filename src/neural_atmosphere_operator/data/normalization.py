@@ -62,7 +62,9 @@ def latitude_cell_weights(
     small but non-zero area.
     """
     if isinstance(latitudes, Tensor):
-        output_dtype = latitudes.dtype if latitudes.is_floating_point() else torch.float32
+        output_dtype = (
+            latitudes.dtype if latitudes.is_floating_point() else torch.float32
+        )
         values_np = latitudes.detach().cpu().numpy()
         weights_np = _latitude_cell_weights_np(values_np)
         weights = torch.as_tensor(
@@ -89,8 +91,12 @@ class AtmosphereNormalizer:
         normalize: bool = True,
     ) -> None:
         self.normalize_enabled = normalize
-        self._means_np: np.ndarray | None = self._to_numpy(means) if means is not None else None
-        self._stds_np: np.ndarray | None = self._to_numpy(stds) if stds is not None else None
+        self._means_np: np.ndarray | None = (
+            self._to_numpy(means) if means is not None else None
+        )
+        self._stds_np: np.ndarray | None = (
+            self._to_numpy(stds) if stds is not None else None
+        )
 
         if normalize and (self._means_np is None or self._stds_np is None):
             raise ValueError("means and stds must be provided when normalize=True")
@@ -197,7 +203,11 @@ class AtmosphereNormalizer:
         channels: Sequence[int] | np.ndarray | None = None,
     ) -> np.ndarray | Tensor:
         """Apply channel-wise z-score normalization: ``(x - mean) / std``."""
-        if not self.normalize_enabled or self._means_np is None or self._stds_np is None:
+        if (
+            not self.normalize_enabled
+            or self._means_np is None
+            or self._stds_np is None
+        ):
             return values
 
         if values.ndim < 3:
@@ -233,7 +243,11 @@ class AtmosphereNormalizer:
         channels: Sequence[int] | np.ndarray | None = None,
     ) -> np.ndarray | Tensor:
         """Reverse z-score normalization: ``x * std + mean``."""
-        if not self.normalize_enabled or self._means_np is None or self._stds_np is None:
+        if (
+            not self.normalize_enabled
+            or self._means_np is None
+            or self._stds_np is None
+        ):
             return values
 
         if values.ndim < 3:
@@ -273,19 +287,35 @@ class AtmosphereNormalizer:
         cls,
         data: np.ndarray,
         save_dir: str | Path | None = None,
+        *,
+        latitudes: np.ndarray | Sequence[float] | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Compute per-channel training-set statistics from ``[T, C, H, W]``.
 
-        ``data`` must contain only the training split.  The unweighted spatial
-        moments intentionally match the conventional FourCastNet/Pangu-style
-        per-field z-score transform; spherical area weighting belongs in the
-        forecast loss and metrics.
+        ``data`` must contain only the training split. This in-memory helper
+        uses the same spherical area measure as the production CLI. It does not
+        create a provenance bundle; use compute_stats.py for training artifacts.
         """
         if data.ndim != 4:
             raise ValueError(f"Expected 4D array [T, C, H, W], got {data.shape}")
-
-        means = np.mean(data, axis=(0, 2, 3), dtype=np.float64).astype(np.float32)
-        stds = np.std(data, axis=(0, 2, 3), dtype=np.float64).astype(np.float32)
+        latitude = (
+            np.linspace(90, -90, data.shape[2])
+            if latitudes is None
+            else np.asarray(latitudes)
+        )
+        if latitude.shape != (data.shape[2],):
+            raise ValueError("latitudes must match the spatial height")
+        weights = np.asarray(latitude_cell_weights(latitude), dtype=np.float64)[
+            None, None, :, None
+        ]
+        values = np.asarray(data, dtype=np.float64)
+        means64 = (values * weights).mean(axis=(0, 2, 3))
+        means = means64.astype(np.float32)
+        stds = np.sqrt(
+            ((values - means64[None, :, None, None]) ** 2 * weights).mean(
+                axis=(0, 2, 3)
+            )
+        ).astype(np.float32)
         if not np.all(np.isfinite(means)) or not np.all(np.isfinite(stds)):
             raise ValueError("Cannot compute normalization from non-finite data")
         if np.any(stds <= 0):

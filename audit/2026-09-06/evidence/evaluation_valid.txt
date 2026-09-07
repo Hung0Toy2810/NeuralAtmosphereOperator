@@ -1,0 +1,1 @@
+2026-09-06 20:36:08 | INFO | neural_atmosphere_operator | Evaluation complete: terminal RMSE=2.47675 ACC=0.00293848

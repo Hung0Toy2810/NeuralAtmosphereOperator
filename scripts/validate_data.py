@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import argparse
-import json
+import hashlib
 import sys
 from pathlib import Path
-from typing import cast
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(PROJECT_ROOT), str(PROJECT_ROOT / "src")]
@@ -14,15 +13,27 @@ sys.path[:0] = [str(PROJECT_ROOT), str(PROJECT_ROOT / "src")]
 import numpy as np
 
 from configs.pipeline_config import DataPaths
-from neural_atmosphere_operator.pipeline.runtime import build_loader
+from neural_atmosphere_operator.pipeline.runtime import build_loader, save_json
+from neural_atmosphere_operator.pipeline.contracts import (
+    validate_global_grid,
+    validate_statistics_bundle,
+)
 from neural_atmosphere_operator.utils.logger import setup_logger
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=DataPaths().root)
-    parser.add_argument("--split", choices=("all", "train", "valid", "test"), default="all")
+    parser.add_argument(
+        "--split", choices=("all", "train", "valid", "test"), default="all"
+    )
     parser.add_argument("--rollout-steps", type=int, default=1)
+    parser.add_argument(
+        "--full-scan",
+        action="store_true",
+        help="Read every state once; verify train payload against statistics checksum",
+    )
+    parser.add_argument("--output", type=Path)
     parser.add_argument("--history", type=int, default=0)
     parser.add_argument("--time-step", type=int, default=1)
     parser.add_argument(
@@ -71,8 +82,7 @@ def main() -> None:
     for split in splits:
         data_path = getattr(paths, split)
         if not data_path.exists():
-            logger.warning("Skipping missing split: %s", data_path)
-            continue
+            raise FileNotFoundError(f"Missing requested split: {data_path}")
         loader, dataset = build_loader(
             paths,
             split,
@@ -83,14 +93,51 @@ def main() -> None:
             num_workers=0,
         )
         try:
+            validate_global_grid(dataset)
+            metadata = None
+            if split == "train":
+                artifacts = {
+                    "means": paths.means,
+                    "stds": paths.stds,
+                    "climatology": paths.climatology,
+                }
+                if args.temp_diff_normalization:
+                    artifacts["time_diff_stds"] = paths.time_diff_stds(args.time_step)
+                metadata = validate_statistics_bundle(
+                    dataset, artifacts, args.time_step
+                )
+            payload_sha256 = None
+            if args.full_scan:
+                digest = hashlib.sha256()
+                source = dataset._get_dataset()
+                for index in range(dataset.total_timesteps):
+                    values = dataset._read_timestep_channels(source, index)
+                    if not np.isfinite(values).all():
+                        raise ValueError(
+                            f"Non-finite {split} state at {dataset.times[index]}"
+                        )
+                    digest.update(values.astype("<f4").tobytes())
+                payload_sha256 = digest.hexdigest()
+                if (
+                    metadata
+                    and metadata.get("training_state_float32_sha256") != payload_sha256
+                ):
+                    raise ValueError(
+                        "Training payload differs from the statistics source; recompute statistics"
+                    )
             batch = next(iter(loader))
-            if not all(np.isfinite(value.numpy()).all() for value in (batch["input"], batch["target"])):
+            if not all(
+                np.isfinite(value.numpy()).all()
+                for value in (batch["input"], batch["target"])
+            ):
                 raise ValueError(f"Non-finite data found in {split}")
             if dataset.config.spatial_crop is None:
                 if not np.isclose(np.abs(dataset.latitudes[[0, -1]]), 90.0).all():
                     raise ValueError("Full SFNO grid must include both poles")
             if means.size != dataset.config.channel_count:
-                raise ValueError("Normalization statistics do not match dataset channels")
+                raise ValueError(
+                    "Normalization statistics do not match dataset channels"
+                )
             if len(dataset.channel_units) != dataset.config.channel_count or any(
                 not unit.strip() for unit in dataset.channel_units
             ):
@@ -112,9 +159,13 @@ def main() -> None:
                 or not np.array_equal(grid[1], reference_grid[1])
                 or grid[2] != reference_grid[2]
             ):
-                raise ValueError("All dataset splits must use the same grid and cadence")
+                raise ValueError(
+                    "All dataset splits must use the same grid and cadence"
+                )
             records[split] = {
                 "path": dataset.data_path,
+                "full_scan": args.full_scan,
+                "state_float32_sha256": payload_sha256,
                 "first_time": dataset.first_time,
                 "last_time": dataset.last_time,
                 "channels": dataset.channel_names,
@@ -143,32 +194,15 @@ def main() -> None:
         ):
             raise ValueError(f"Temporal overlap between {left} and {right} splits")
 
-    if "train" in records:
-        metadata_path = paths.means.parent / "stats.json"
-        if not metadata_path.is_file():
-            raise FileNotFoundError(
-                f"Missing statistics provenance metadata: {metadata_path}"
+    if args.output:
+        if args.output.exists():
+            raise FileExistsError(
+                "Validation report already exists; choose a new output path"
             )
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        train = records["train"]
-        expected = {
-            "source": str(train["path"]),
-            "first_time": train["first_time"],
-            "last_time": train["last_time"],
-            "channels": list(cast(tuple[str, ...], train["channels"])),
-            "channel_units": list(
-                cast(tuple[str, ...], train["channel_units"])
-            ),
-            "spatial_weighting": "spherical_latitude_cell_area",
-            "time_difference_step": args.time_step,
-            "cadence_hours": train["cadence_hours"],
-        }
-        mismatches = [key for key, value in expected.items() if metadata.get(key) != value]
-        if mismatches:
-            raise ValueError(
-                "Statistics provenance does not match training data: "
-                + ", ".join(mismatches)
-            )
+        save_json(
+            args.output,
+            {"status": "passed", "full_scan": args.full_scan, "splits": records},
+        )
 
 
 if __name__ == "__main__":

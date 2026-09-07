@@ -1,0 +1,38 @@
+{
+  "zarr_dask_cache_32": {
+    "input_bytes": 79872,
+    "peak_bytes": 159992,
+    "ratio": 2.003104967948718
+  },
+  "zarr_dask_cache_128": {
+    "input_bytes": 319488,
+    "peak_bytes": 639256,
+    "ratio": 2.00087640224359
+  },
+  "downsample_alias": {
+    "source_mode": 500,
+    "source_grid_width": 1440,
+    "target_grid_width": 720,
+    "output_dominant_mode": 220,
+    "output_amplitude": 0.21321177000745045
+  },
+  "scale1_residual": {
+    "input_grid": "equiangular",
+    "output_grid": "legendre-gauss",
+    "scale_residual": false,
+    "residual_error_max": 0.06475746631622314
+  },
+  "batched_18h_cadence": {
+    "delta_hours": [
+      6,
+      18
+    ],
+    "boundary_gap_hours": 6
+  },
+  "full_grid_bytes": {
+    "state": 27031680,
+    "training_corpus": 947838827520,
+    "valid_60_targets": 1621900800,
+    "test_120_targets": 3243801600
+  }
+}

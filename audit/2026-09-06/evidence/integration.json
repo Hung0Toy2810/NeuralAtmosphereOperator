@@ -1,0 +1,52 @@
+{
+  "work_directory": "/var/folders/2n/f20_1_jd7bjgp25m_p5shyb40000gn/T/nao-audit-integration-h1mb1rqo",
+  "integration_stats": {
+    "exit_code": 0
+  },
+  "integration_full": {
+    "exit_code": 0
+  },
+  "integration_resume": {
+    "exit_code": 0
+  },
+  "same_config_resume_weight_max_error": 0.0,
+  "integration_changed_warmup": {
+    "exit_code": 0
+  },
+  "changed_warmup_resume_weight_max_error": 0.0002742192300502211,
+  "integration_changed_sample_count": {
+    "exit_code": 0
+  },
+  "changed_sample_resume_weight_max_error": 0.0005814473843201995,
+  "evaluation_valid": {
+    "exit_code": 0,
+    "lead_hours": 6.0,
+    "data_first_time": "2019-01-01T00:00:00.000000000"
+  },
+  "evaluation_wrong_cadence": {
+    "exit_code": 0,
+    "lead_hours": 12.0,
+    "data_first_time": "2019-01-01T00:00:00.000000000"
+  },
+  "evaluation_shifted_longitude": {
+    "exit_code": 0,
+    "lead_hours": 6.0,
+    "data_first_time": "2019-01-01T00:00:00.000000000"
+  },
+  "evaluation_training_as_test": {
+    "exit_code": 0,
+    "lead_hours": 6.0,
+    "data_first_time": "1995-01-01T00:00:00.000000000"
+  },
+  "integration_rollout": {
+    "exit_code": 0
+  },
+  "transposed_state_accepted_input_shape": [
+    13,
+    26,
+    24
+  ],
+  "evaluation_regional": {
+    "exit_code": 0
+  }
+}

@@ -20,7 +20,11 @@ from neural_atmosphere_operator.pipeline.dependencies import (
     enforce_checkpoint_runtime,
     validate_supported_runtime,
 )
-from neural_atmosphere_operator.pipeline.forecast import autoregressive_predictions
+from neural_atmosphere_operator.pipeline.contracts import enforce_forecast_contract
+from neural_atmosphere_operator.pipeline.forecast import (
+    autoregressive_predictions,
+    lazy_target_provider,
+)
 from neural_atmosphere_operator.pipeline.metrics import (
     LeadMetricAccumulator,
     channel_stds_tensor,
@@ -36,6 +40,7 @@ from neural_atmosphere_operator.pipeline.runtime import (
     move_batch,
     save_json,
     statistics_signature,
+    dataset_signature,
 )
 from neural_atmosphere_operator.utils.logger import setup_logger
 
@@ -57,7 +62,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--time-step", type=int)
     parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument("--num-workers", type=int, default=2)
+    parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--prefetch-factor", type=int, default=2)
     parser.add_argument(
         "--persistent-workers",
@@ -65,9 +70,17 @@ def parse_args() -> argparse.Namespace:
         default=True,
     )
     parser.add_argument("--max-samples", type=int)
+    parser.add_argument(
+        "--sample-selection",
+        choices=("first", "evenly_spaced"),
+        default="evenly_spaced",
+    )
     parser.add_argument("--device", default="auto")
     parser.add_argument("--amp-dtype", choices=("bfloat16", "float16"))
     parser.add_argument("--no-amp", action="store_true")
+    parser.add_argument(
+        "--deterministic", action=argparse.BooleanOptionalAction, default=None
+    )
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--allow-runtime-mismatch", action="store_true")
     parser.add_argument("--allow-data-mismatch", action="store_true")
@@ -133,11 +146,20 @@ def main() -> None:
         if args.output_dir
         else checkpoint_path.parents[1] / f"evaluation_{args.split}"
     )
+    if (output_dir / "metrics.json").exists():
+        raise FileExistsError(
+            "Evaluation output already exists; choose a new --output-dir"
+        )
     output_dir.mkdir(parents=True, exist_ok=True)
     logger = setup_logger(log_file=output_dir / "evaluate.log")
     device = choose_device(args.device)
+    checkpoint = load_checkpoint(checkpoint_path, torch.device("cpu"))
+    torch.use_deterministic_algorithms(
+        args.deterministic
+        if args.deterministic is not None
+        else bool(checkpoint.get("runtime", {}).get("deterministic_algorithms", False))
+    )
     runtime = validate_supported_runtime(device)
-    checkpoint = load_checkpoint(checkpoint_path, device)
     mismatches = enforce_checkpoint_runtime(
         checkpoint, runtime, allow_mismatch=args.allow_runtime_mismatch
     )
@@ -147,6 +169,8 @@ def main() -> None:
     model = build_model(model_config, device)
     model.load_state_dict(checkpoint["model_state"])
     model.eval()
+    checkpoint.pop("optimizer_state", None)
+    checkpoint.pop("model_state", None)
 
     paths = DataPaths(args.data_dir.expanduser().resolve())
     training_config = checkpoint.get("training_config", {})
@@ -185,8 +209,20 @@ def main() -> None:
         means_path=means_path,
         stds_path=stds_path,
         max_samples=args.max_samples,
-        spatial_crop=model_config.img_size,
+        sample_selection=args.sample_selection,
+        lazy_targets=True,
     )
+    enforce_forecast_contract(
+        training_config,
+        dataset,
+        time_step,
+        args.split,
+        diagnostic=args.allow_data_mismatch,
+    )
+    if dataset.spatial_shape != model_config.img_size:
+        raise ValueError(
+            "Dataset grid differs from checkpoint; regrid explicitly before forecasting"
+        )
     channel_stds = channel_stds_tensor(np.load(stds_path), device)
     normalized_climatology = normalized_climatology_tensor(
         np.load(climatology_path),
@@ -195,11 +231,15 @@ def main() -> None:
         device,
     )
     if tuple(normalized_climatology.shape[-2:]) != dataset.spatial_shape:
-        normalized_climatology = normalized_climatology[
-            ..., : dataset.spatial_shape[0], : dataset.spatial_shape[1]
-        ]
+        raise ValueError(
+            "Climatology grid must match evaluation grid; cropping is forbidden"
+        )
     latitudes = torch.as_tensor(dataset.latitudes, device=device)
     accumulators = [LeadMetricAccumulator() for _ in range(args.rollout_steps)]
+    baseline_accumulators = {
+        name: [LeadMetricAccumulator() for _ in range(args.rollout_steps)]
+        for name in ("persistence", "training_climatology")
+    }
     amp_enabled = (
         not args.no_amp
         and not bool(training_config.get("no_amp", False))
@@ -208,9 +248,15 @@ def main() -> None:
     try:
         with torch.inference_mode():
             for batch_index, raw_batch in enumerate(loader):
-                batch = move_batch(raw_batch, device)
+                batch = move_batch(raw_batch, device, keep_targets_cpu=True)
+                persistence = batch["input"][:, -model_config.out_channels :]
                 with amp_context(device, amp_enabled, amp_dtype):
-                    pairs = autoregressive_predictions(model, batch, args.rollout_steps)
+                    pairs = autoregressive_predictions(
+                        model,
+                        batch,
+                        args.rollout_steps,
+                        target_provider=lazy_target_provider(dataset, raw_batch),
+                    )
                     for lead, (prediction, target) in enumerate(pairs):
                         accumulators[lead].update(
                             prediction.float(),
@@ -219,12 +265,33 @@ def main() -> None:
                             latitudes,
                             normalized_climatology,
                         )
+                        for name, baseline in (
+                            ("persistence", persistence),
+                            (
+                                "training_climatology",
+                                normalized_climatology.expand_as(target),
+                            ),
+                        ):
+                            baseline_accumulators[name][lead].update(
+                                baseline.float(),
+                                target.float(),
+                                channel_stds,
+                                latitudes,
+                                normalized_climatology,
+                            )
                 if (batch_index + 1) % 20 == 0:
                     logger.info("Processed %d/%d batches", batch_index + 1, len(loader))
     finally:
         dataset.close()
 
     lead_hours = time_step * dataset.cadence_hours
+    if (
+        args.report_every_days
+        and args.rollout_steps * lead_hours < args.report_every_days * 24
+    ):
+        raise ValueError(
+            "rollout horizon is shorter than the requested report interval"
+        )
     rows = [
         accumulator.result(lead, lead_hours)
         for lead, accumulator in enumerate(accumulators, start=1)
@@ -241,8 +308,46 @@ def main() -> None:
     ]
     write_csv(output_dir / "metrics_by_lead.csv", rows)
     write_csv(output_dir / "metrics_by_channel.csv", channel_rows)
+    for name, items in baseline_accumulators.items():
+        write_csv(
+            output_dir / f"{name}_by_channel.csv",
+            [
+                row
+                for lead, acc in enumerate(items, start=1)
+                for row in acc.channel_results(
+                    lead, dataset.channel_names, lead_hours, dataset.channel_units
+                )
+            ],
+        )
     summary = {
         "checkpoint": str(checkpoint_path),
+        "checkpoint_sha256": statistics_signature(checkpoint_path)["sha256"],
+        "data_signature": dataset_signature(dataset),
+        "forecast_contract": training_config["forecast_contract"],
+        "runtime": runtime,
+        "amp_enabled": amp_enabled,
+        "amp_dtype": amp_dtype,
+        "diagnostic_run": bool(
+            args.allow_data_mismatch
+            or args.allow_runtime_mismatch
+            or training_config.get("diagnostic_run")
+        ),
+        "overrides": {
+            "data": args.allow_data_mismatch,
+            "runtime": args.allow_runtime_mismatch,
+        },
+        "statistics": {
+            name: statistics_signature(path)
+            for name, path in (
+                ("means", means_path),
+                ("stds", stds_path),
+                ("climatology", climatology_path),
+            )
+        },
+        "initializations": [
+            str(dataset.times[dataset.config.history * time_step + int(index)])
+            for index in dataset.sample_indices
+        ],
         "split": args.split,
         "rollout_steps": args.rollout_steps,
         "samples": len(dataset),
@@ -254,8 +359,17 @@ def main() -> None:
             "mean_per_initialization_spatial_acc_with_training_long_term_climatology"
         ),
         "metrics": rows,
+        "baselines": {
+            name: [
+                acc.result(lead, lead_hours) for lead, acc in enumerate(items, start=1)
+            ]
+            for name, items in baseline_accumulators.items()
+        },
+        "baseline_acc_note": "Climatology has zero forecast anomaly, so its ACC is undefined; compare RMSE/MAE.",
     }
     save_json(output_dir / "metrics.json", summary)
+    if args.report_every_days is None:
+        (output_dir / "milestones.json").unlink(missing_ok=True)
     if args.report_every_days is not None:
         levels = build_milestone_report(rows, channel_rows, args.report_every_days)
         if not levels:

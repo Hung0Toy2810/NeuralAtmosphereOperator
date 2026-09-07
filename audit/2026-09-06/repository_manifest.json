@@ -1,0 +1,256 @@
+{
+  "commit": "f3b3da3155915daf942369090db30b016cb13a78",
+  "tracked_file_count": 50,
+  "files": [
+    {
+      "path": ".gitignore",
+      "bytes": 209,
+      "sha256": "aca0b4b964dd2ffc84e1eae483c4f897674ae602b791ce87db77e23d87e0d613"
+    },
+    {
+      "path": "README.md",
+      "bytes": 9100,
+      "sha256": "0d19e7846e641ea485d37a9299cda78e888eee82f1adfaf504a57b2cdc560ff6"
+    },
+    {
+      "path": "configs/__init__.py",
+      "bytes": 60,
+      "sha256": "2197585e92c04398b0c3f92b32b31c375e994e34901ebc5a13f051d7f5014476"
+    },
+    {
+      "path": "configs/download_data_config.py",
+      "bytes": 4292,
+      "sha256": "5551dab174678d8220b9a63b5fc3fbeb0e8e242e44c6044d945121a18089c2a4"
+    },
+    {
+      "path": "configs/model_config.py",
+      "bytes": 4754,
+      "sha256": "84df7450a60677845f14ba5d626bd1bd8720f5fdfd153e1e5daa4798834a6f6f"
+    },
+    {
+      "path": "configs/pipeline_config.py",
+      "bytes": 3414,
+      "sha256": "63d84e16e9b6d62e1c4d00ec33fa8d04795c185f864a826923568ede0f2d78c3"
+    },
+    {
+      "path": "data/__init__.py",
+      "bytes": 51,
+      "sha256": "77152f450afe6416f5804d143f19185950f70260d1105d394240917754ecdb5b"
+    },
+    {
+      "path": "data/download_data.py",
+      "bytes": 17573,
+      "sha256": "272d20c5fd78bea4813496bdf68dbcfd5979a29e0ee32303f358615f48a5571b"
+    },
+    {
+      "path": "data/explore_data.py",
+      "bytes": 3991,
+      "sha256": "14f68721382add1e2ac30921462e18a0742230faddf29e93d66a894dfaa5e3ca"
+    },
+    {
+      "path": "data/test_download_sample.py",
+      "bytes": 2842,
+      "sha256": "32f3b38dc48b49463a661a7aedc2a170670092288776bd69d9e48fa40121d6f5"
+    },
+    {
+      "path": "notebook/01_model_architecture.ipynb",
+      "bytes": 44543,
+      "sha256": "9b852b84cf0d5c2431962bb4a540d115ec27752a10cbea3a86d71c1cfc9c66e2"
+    },
+    {
+      "path": "notebook/02_data_exploration.ipynb",
+      "bytes": 37622,
+      "sha256": "e556612a00745038f6b9e88a1a685674bcf31711ca3fed9965477b2d576cb486"
+    },
+    {
+      "path": "pyproject.toml",
+      "bytes": 961,
+      "sha256": "a8584ccbe54cb8fb872fe03a1a903c6fb556b21668bc0ce90d5bb4eaf5a00323"
+    },
+    {
+      "path": "pytest.ini",
+      "bytes": 26,
+      "sha256": "58342927762967087420be340b0048197e9263b7035bdaceb0d6bd89a26efccb"
+    },
+    {
+      "path": "requirements-lock.txt",
+      "bytes": 271,
+      "sha256": "f9e6d5c8f72b104d42972ac06ba1b79ffaa02b00ba7c7a1620b3893e5120e0f9"
+    },
+    {
+      "path": "requirements.txt",
+      "bytes": 138,
+      "sha256": "a2ddfb6135273e2db9445d2cf459c67cd93cc899815d31ac8be51c7aed7345ce"
+    },
+    {
+      "path": "scripts/analyze_gradient_risks.py",
+      "bytes": 2193,
+      "sha256": "247eec5471722213cb696f4d61cbdde8245e6ebfdc283f1e51dcf571aa5c5180"
+    },
+    {
+      "path": "scripts/audit_training_readiness.py",
+      "bytes": 7082,
+      "sha256": "c11fe764de75ce2940f17600750b2d868813408b76b2cc8ab7e5f8250c53df5f"
+    },
+    {
+      "path": "scripts/benchmark_model.py",
+      "bytes": 4053,
+      "sha256": "f1912a8bc2c8879e5f091c2765970ed34124394ec183facb12f82dde76d92613"
+    },
+    {
+      "path": "scripts/benchmark_sample.py",
+      "bytes": 10721,
+      "sha256": "ee8512a242461813a63b7aab0480369d508ab44cd2c2b2944c8267ddaafd5db6"
+    },
+    {
+      "path": "scripts/check_backend.py",
+      "bytes": 2552,
+      "sha256": "1b24918bfc38676d392d2dea406427ff413f6829e8881afe087a00c3a184a72e"
+    },
+    {
+      "path": "scripts/compute_stats.py",
+      "bytes": 10788,
+      "sha256": "880d9ee5a7b8f2465dc42fa917f7d43eda64a2e05c7bd9420b924a6f2f97e3c1"
+    },
+    {
+      "path": "scripts/estimate_vram.py",
+      "bytes": 11829,
+      "sha256": "a5e23ebb5bd837718882fd778e9159256d6cd91203f269a14557dbbcc0dc0ed7"
+    },
+    {
+      "path": "scripts/evaluate.py",
+      "bytes": 11009,
+      "sha256": "301f41c517861c2a2900de844b9b010cbf2248b44681de56d47237ea903b97c1"
+    },
+    {
+      "path": "scripts/plot_results.py",
+      "bytes": 2927,
+      "sha256": "9196def5c0331680cb905f692ce45c3aa71f1a4b9e1ba1ce8de9f1dd9b41f2ef"
+    },
+    {
+      "path": "scripts/rollout.py",
+      "bytes": 8395,
+      "sha256": "f557729f2b5f105df1941e0a119da6ebe81272908e72f5b7f9437f72aebcf028"
+    },
+    {
+      "path": "scripts/split_dataset.py",
+      "bytes": 2336,
+      "sha256": "1a15f21ef68b0829470d98d75707aa043377c08352b580f3b388cf1ce78d1360"
+    },
+    {
+      "path": "scripts/train.py",
+      "bytes": 39483,
+      "sha256": "3a01cfd38f9110c3583d7643c8311829584829e4f31eefadb3a4cbe753850c64"
+    },
+    {
+      "path": "scripts/validate_data.py",
+      "bytes": 7528,
+      "sha256": "02fe8abb379fc3fc0bf48b4ef54917bfc5577061cb19290992339d875d50dc92"
+    },
+    {
+      "path": "src/__init__.py",
+      "bytes": 53,
+      "sha256": "a9450ad88696dd38a69c1fb6e5cbe10ec24bc66e65b2f4b3f2b0cf3a3dd5a319"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/__init__.py",
+      "bytes": 899,
+      "sha256": "69a7139dd2338ec12efa3eb8ee073cb5c079afc9f2d5c58561eff032e8117a85"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/data/__init__.py",
+      "bytes": 402,
+      "sha256": "72d4e19ed035323e9dd228f6a77219dedebf30d7bfd34a46b367ee8e4d08ba19"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/data/loader.py",
+      "bytes": 19327,
+      "sha256": "110abfa482d167f65c084918d92f6c69d2668b47e8e760c4e009650fc8d36659"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/data/normalization.py",
+      "bytes": 11917,
+      "sha256": "a77756cdcdb6034da780f163aa54a1b2c9c035ade17194a0b9014a02c84dcafe"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/models/__init__.py",
+      "bytes": 591,
+      "sha256": "4e187241d3d785533c37321f7941b350ab1e7cb6db1d28aabe6dd6237aaab689"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/models/loss.py",
+      "bytes": 16864,
+      "sha256": "6def417278de58d863e3fbcc9a7a786ddff582914ec97a6f1ce141552124125a"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/models/model.py",
+      "bytes": 7538,
+      "sha256": "5a76d660d4d8bfb44b60329ec9fc83cbaf8749dc17573d3c066aa4cc3280cd93"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/pipeline/__init__.py",
+      "bytes": 72,
+      "sha256": "b93c63df75054d12425c59654e5e957f28a4ffab5d3d78088230fa95031cc928"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/pipeline/checkpoint.py",
+      "bytes": 7687,
+      "sha256": "1efbd3c3d8ae2999a0d91a1b30163b91b3fb3e74534e7edd1a3a94fe8bb3c414"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/pipeline/dependencies.py",
+      "bytes": 5016,
+      "sha256": "a9d80b2235d3f60f822ad23f94b7d5f856c92836c341b4489a4998ce14d4ad1f"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/pipeline/forecast.py",
+      "bytes": 2543,
+      "sha256": "20e2d041494b70178d4373d156a13fa83df673062c8ef6a0e7cc29a092390c78"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/pipeline/metrics.py",
+      "bytes": 7883,
+      "sha256": "364a84138ee60fb4e3fadfe3f1511ccff039cd4aa015b6cd5ceec7017813c676"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/pipeline/runtime.py",
+      "bytes": 8718,
+      "sha256": "4385a343ed1447612aa72502829689c3fe5fec6b3a0d3ffae3789c8d6ecf5fe5"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/pipeline/schedule.py",
+      "bytes": 2001,
+      "sha256": "7e6a9782936ad315575a11349e433cde0aa4a9b1bb9707242110560947400383"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/utils/__init__.py",
+      "bytes": 85,
+      "sha256": "f0eb8c6b496148a981efa14556e34023dd618212b35dd32749437b19c5087d88"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/utils/logger.py",
+      "bytes": 1100,
+      "sha256": "9f89fb8e9f28c1f6b67278d17c408649349f9c28920a8f35e5e406afc313c27b"
+    },
+    {
+      "path": "test/test_checkpoint_resume.py",
+      "bytes": 5342,
+      "sha256": "f63ef44df0223d9ec49c3f957fcf623ec30725b83f950fa1556cfa23c526a07d"
+    },
+    {
+      "path": "test/test_data_pipeline.py",
+      "bytes": 17481,
+      "sha256": "8f1b32dab26011ba5641d5bb777c3370d9dbf37d996c2a37a0574e0f0baa0abe"
+    },
+    {
+      "path": "test/test_model_and_loss.py",
+      "bytes": 8155,
+      "sha256": "b6b5e22e9d568c24d3ef5fa3daf1209d55b78b5f739707069dfeefae696d970f"
+    },
+    {
+      "path": "test/test_pipeline.py",
+      "bytes": 10771,
+      "sha256": "96e01e65f34a087ed0f1a7e59529e68943fe44a2a47badbee131becfa8e828c6"
+    }
+  ]
+}

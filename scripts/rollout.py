@@ -20,7 +20,8 @@ from neural_atmosphere_operator.pipeline.dependencies import (
     enforce_checkpoint_runtime,
     validate_supported_runtime,
 )
-from neural_atmosphere_operator.pipeline.forecast import autoregressive_predictions
+from neural_atmosphere_operator.pipeline.contracts import enforce_forecast_contract
+from neural_atmosphere_operator.pipeline.forecast import forecast_states
 from neural_atmosphere_operator.pipeline.runtime import (
     amp_context,
     build_loader,
@@ -30,6 +31,7 @@ from neural_atmosphere_operator.pipeline.runtime import (
     model_config_from_dict,
     move_batch,
     statistics_signature,
+    dataset_signature,
 )
 from neural_atmosphere_operator.utils.logger import setup_logger
 
@@ -45,10 +47,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rollout-steps", type=int, default=4)
     parser.add_argument("--time-step", type=int)
     parser.add_argument("--samples", type=int, default=1)
+    parser.add_argument(
+        "--forecast-only",
+        action="store_true",
+        help="Forecast beyond the observed store without requiring future targets",
+    )
     parser.add_argument("--start-index", type=int, default=0)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--amp-dtype", choices=("bfloat16", "float16"))
     parser.add_argument("--no-amp", action="store_true")
+    parser.add_argument(
+        "--deterministic", action=argparse.BooleanOptionalAction, default=None
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument("--allow-runtime-mismatch", action="store_true")
     parser.add_argument("--allow-data-mismatch", action="store_true")
@@ -72,8 +82,13 @@ def main() -> None:
         raise FileExistsError(f"Stale partial rollout exists: {temporary}")
     logger = setup_logger(log_file=output.with_suffix(".log"))
     device = choose_device(args.device)
+    checkpoint = load_checkpoint(checkpoint_path, torch.device("cpu"))
+    torch.use_deterministic_algorithms(
+        args.deterministic
+        if args.deterministic is not None
+        else bool(checkpoint.get("runtime", {}).get("deterministic_algorithms", False))
+    )
     runtime = validate_supported_runtime(device)
-    checkpoint = load_checkpoint(checkpoint_path, device)
     mismatches = enforce_checkpoint_runtime(
         checkpoint, runtime, allow_mismatch=args.allow_runtime_mismatch
     )
@@ -83,6 +98,8 @@ def main() -> None:
     model = build_model(model_config, device)
     model.load_state_dict(checkpoint["model_state"])
     model.eval()
+    checkpoint.pop("optimizer_state", None)
+    checkpoint.pop("model_state", None)
 
     paths = DataPaths(args.data_dir.expanduser().resolve())
     training = checkpoint.get("training_config", {})
@@ -112,8 +129,16 @@ def main() -> None:
         data_path=args.data_path,
         means_path=means_path,
         stds_path=stds_path,
-        spatial_crop=model_config.img_size,
+        require_targets=not args.forecast_only,
+        lazy_targets=True,
     )
+    enforce_forecast_contract(
+        training, dataset, time_step, args.split, diagnostic=args.allow_data_mismatch
+    )
+    if dataset.spatial_shape != model_config.img_size:
+        raise ValueError(
+            "Dataset grid differs from checkpoint; regrid explicitly before forecasting"
+        )
     del loader
     if args.start_index + args.samples > len(dataset):
         raise IndexError("Requested rollout samples exceed the dataset")
@@ -126,8 +151,10 @@ def main() -> None:
     predictions = group.create_dataset(
         "prediction", shape=shape, chunks=chunks, dtype="f4"
     )
-    targets = group.create_dataset(
-        "target", shape=shape, chunks=chunks, dtype="f4"
+    targets = (
+        None
+        if args.forecast_only
+        else group.create_dataset("target", shape=shape, chunks=chunks, dtype="f4")
     )
     time_indices = group.create_dataset(
         "initial_time_index", shape=(args.samples,), dtype="i8"
@@ -145,6 +172,19 @@ def main() -> None:
     group.create_dataset("longitude", data=dataset.longitudes)
     group.attrs.update(
         checkpoint=str(checkpoint_path),
+        checkpoint_sha256=statistics_signature(checkpoint_path)["sha256"],
+        forecast_contract=training["forecast_contract"],
+        data_signature=dataset_signature(dataset),
+        statistics={
+            name: statistics_signature(path)
+            for name, path in (("means", means_path), ("stds", stds_path))
+        },
+        forecast_only=args.forecast_only,
+        diagnostic_run=bool(
+            args.allow_data_mismatch
+            or args.allow_runtime_mismatch
+            or training.get("diagnostic_run")
+        ),
         split=args.split,
         rollout_steps=args.rollout_steps,
         time_step_hours=time_step * dataset.cadence_hours,
@@ -170,30 +210,40 @@ def main() -> None:
                         "time_index": raw["time_index"].unsqueeze(0),
                     },
                     device,
+                    keep_targets_cpu=True,
                 )
                 with amp_context(device, amp_enabled, amp_dtype):
-                    for lead, (prediction, target) in enumerate(
-                        autoregressive_predictions(
-                            model, batch, args.rollout_steps
-                        )
+                    for lead, prediction in enumerate(
+                        forecast_states(model, batch["input"], args.rollout_steps)
                     ):
+                        if not torch.isfinite(prediction).all():
+                            raise FloatingPointError(
+                                f"Non-finite forecast at lead {lead + 1}"
+                            )
                         prediction_raw = dataset.normalizer.denormalize(
                             prediction.float().cpu()
                         )
-                        target_raw = dataset.normalizer.denormalize(
-                            target.float().cpu()
-                        )
                         predictions[output_index, lead] = np.asarray(prediction_raw[0])
-                        targets[output_index, lead] = np.asarray(target_raw[0])
+                        if targets is not None:
+                            target_raw = dataset._read_timestep_channels(
+                                dataset._get_dataset(),
+                                int(raw["target_time_indices"][lead]),
+                            )
+                            targets[output_index, lead] = np.asarray(target_raw)
                 time_indices[output_index] = int(raw["time_index"])
                 base_index = int(raw["time_index"])
                 initial_times[output_index] = int(
                     dataset.times[base_index].astype(np.int64)
                 )
                 for lead in range(args.rollout_steps):
-                    valid_index = base_index + (lead + 1) * time_step
                     valid_times[output_index, lead] = int(
-                        dataset.times[valid_index].astype(np.int64)
+                        dataset.times[base_index].astype(np.int64)
+                        + int(
+                            (lead + 1)
+                            * time_step
+                            * dataset.cadence_hours
+                            * 3_600_000_000_000
+                        )
                     )
                 logger.info("Saved sample %d", sample_index)
         os.replace(temporary, output)

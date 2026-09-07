@@ -58,19 +58,19 @@ def test_warmup_cosine_schedule_hits_boundaries() -> None:
     assert all(left >= right for left, right in zip(values[2:], values[3:]))
 
 
-def test_long_validation_and_test_ranges_have_four_rollout_starts() -> None:
+def test_validation_and_test_cover_disjoint_full_years() -> None:
     paths = DataPaths()
-    assert paths.dataset.name == "era5_1995_2019_0p5deg_26ch.zarr"
+    assert paths.dataset.name == "era5_1995_2020_0p5deg_26ch.zarr"
     assert paths.split_time_range("train") == ("1995-01-01", "2018-12-31")
-    assert paths.split_time_range("valid") == ("2019-01-01", "2019-01-16")
-    assert paths.split_time_range("test") == ("2019-01-17", "2019-02-16")
+    assert paths.split_time_range("valid") == ("2019-01-01", "2019-12-31")
+    assert paths.split_time_range("test") == ("2020-01-01", "2020-12-31")
     assert TrainingConfig().validation_rollout_steps == 60
     assert TrainingConfig().validation_batch_size == 1
-    assert TrainingConfig().epochs == 0
+    assert TrainingConfig().epochs == 25
     assert TrainingConfig().scheduler_epochs == 25
     assert TrainingConfig().patience == 0
-    assert 64 - 60 == 4
-    assert 124 - 120 == 4
+    assert 365 * 4 - 60 == 1400
+    assert 366 * 4 - 120 == 1344
 
 
 def test_accumulation_counts_short_final_batch_by_sample() -> None:
@@ -242,9 +242,7 @@ def test_physical_metric_uses_channel_standard_deviation() -> None:
         torch.zeros(1, 2, 5, 8),
     )
     result = accumulator.result(1)
-    channels = accumulator.channel_results(
-        1, ("a", "b"), units=("m s**-1", "K")
-    )
+    channels = accumulator.channel_results(1, ("a", "b"), units=("m s**-1", "K"))
     assert result["normalized_mse"] == pytest.approx(1.0)
     assert result["normalized_rmse"] == pytest.approx(1.0)
     assert channels[0]["physical_rmse"] == pytest.approx(2.0)
@@ -257,7 +255,7 @@ def test_acc_is_mean_of_per_initialization_spatial_correlations() -> None:
     target = target_pattern.expand(2, 1, 3, 2).clone()
     prediction = target.clone()
     prediction[0] *= 100.0  # energetic but perfectly correlated
-    prediction[1] *= -1.0   # quiet and perfectly anti-correlated
+    prediction[1] *= -1.0  # quiet and perfectly anti-correlated
 
     accumulator = LeadMetricAccumulator()
     accumulator.update(

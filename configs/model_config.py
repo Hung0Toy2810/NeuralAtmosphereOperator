@@ -37,6 +37,7 @@ class AtmosphereModelConfig:
     drop_path_rate: float = 0.0
     hard_thresholding_fraction: float = 1.0
     use_complex_kernels: bool = True
+    stabilize_sht_constants: bool = True
 
     operator_type: str = "driscoll-healy"
     grid: str = "equiangular"
@@ -77,6 +78,26 @@ class AtmosphereModelConfig:
             raise ValueError("drop_path_rate must be in [0, 1)")
         if not 0.0 < self.hard_thresholding_fraction <= 1.0:
             raise ValueError("hard_thresholding_fraction must be in (0, 1]")
+        if not self.use_complex_kernels:
+            raise ValueError(
+                "torch-harmonics 0.7.4 ignores use_complex_kernels=False; real kernels are unsupported"
+            )
+        if self.scale_factor == 1 and self.grid_internal != self.grid:
+            raise ValueError(
+                "scale_factor=1 requires matching grids to avoid incorrect residual resampling"
+            )
+        if self.num_layers == 1 and self.normalization_layer == "layer_norm":
+            raise ValueError(
+                "num_layers=1 with layer_norm is unsupported by the locked backend"
+            )
+        retained = int(
+            min((height - 1) // self.scale_factor + 1, width // self.scale_factor // 2)
+            * self.hard_thresholding_fraction
+        )
+        if retained < 1:
+            raise ValueError(
+                "hard_thresholding_fraction must retain at least one harmonic degree/order"
+            )
         if self.operator_type not in {"driscoll-healy", "diagonal"}:
             raise ValueError("unsupported operator_type")
         if self.grid != "equiangular":

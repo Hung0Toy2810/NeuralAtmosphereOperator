@@ -53,9 +53,7 @@ def test_half_degree_regrid_preserves_constants_and_global_integral():
     source_weights = np.diff(np.sin(np.deg2rad(source_bounds)))[::-1]
     target_weights = np.diff(np.sin(np.deg2rad(target_bounds)))[::-1]
     source_mean = np.sum(field.mean(axis=1) * source_weights) / source_weights.sum()
-    target_mean = (
-        np.sum(regridded.mean(axis=1) * target_weights) / target_weights.sum()
-    )
+    target_mean = np.sum(regridded.mean(axis=1) * target_weights) / target_weights.sum()
     assert target_mean == pytest.approx(source_mean, abs=1e-8)
 
 
@@ -82,9 +80,7 @@ def test_half_degree_regrid_uses_periodic_aligned_longitude_overlap():
     field = np.broadcast_to(wave, (721, 1440)).copy()
     regridded = _conservative_half_degree(field, rows)
     expected = (
-        0.25 * np.roll(wave, 1)[::2]
-        + 0.5 * wave[::2]
-        + 0.25 * np.roll(wave, -1)[::2]
+        0.25 * np.roll(wave, 1)[::2] + 0.5 * wave[::2] + 0.25 * np.roll(wave, -1)[::2]
     )
     np.testing.assert_allclose(
         regridded,
@@ -97,14 +93,15 @@ def test_half_degree_regrid_uses_periodic_aligned_longitude_overlap():
 def test_download_contract_fingerprint_covers_semantic_configuration():
     config = WeatherBenchDownloadConfig()
     assert config.start_date == "1995-01-01"
-    assert config.end_date == "2019-02-16"
-    assert config.output_zarr_path.endswith("era5_1995_2019_0p5deg_26ch.zarr")
+    assert config.end_date == "2020-12-31"
+    assert config.output_zarr_path.endswith("era5_1995_2020_0p5deg_26ch.zarr")
     fingerprint = contract_fingerprint(download_contract(config))
     assert len(fingerprint) == 64
     assert contract_fingerprint(download_contract(config)) == fingerprint
-    assert contract_fingerprint(
-        download_contract(replace(config, end_date="2019-02-17"))
-    ) != fingerprint
+    assert (
+        contract_fingerprint(download_contract(replace(config, end_date="2019-02-17")))
+        != fingerprint
+    )
     progress = {
         "download_contract": download_contract(config),
         "download_contract_sha256": fingerprint,
@@ -115,12 +112,17 @@ def test_download_contract_fingerprint_covers_semantic_configuration():
     }
     validate_resume_contract(progress, attrs, config)
     with pytest.raises(RuntimeError, match="download contract"):
-        validate_resume_contract(progress, attrs, replace(config, end_date="2019-02-17"))
-    assert contract_fingerprint(
-        download_contract(
-            replace(config, surface_variables=config.surface_variables[:-1])
+        validate_resume_contract(
+            progress, attrs, replace(config, end_date="2019-02-17")
         )
-    ) != fingerprint
+    assert (
+        contract_fingerprint(
+            download_contract(
+                replace(config, surface_variables=config.surface_variables[:-1])
+            )
+        )
+        != fingerprint
+    )
 
 
 def test_flattened_state_keeps_per_channel_metadata(tmp_path: Path):
@@ -241,16 +243,16 @@ def test_vectorized_channel_statistics_match_direct_weighted_reductions():
         (delta - expected_delta_mean[None, :, None, None]) ** 2 * delta_weights
     ).sum(axis=reductions) / delta_weights.sum(axis=reductions)
     np.testing.assert_allclose(statistics["mean"], expected_mean, rtol=2e-6)
-    np.testing.assert_allclose(
-        statistics["variance"], expected_variance, rtol=2e-6
-    )
+    np.testing.assert_allclose(statistics["variance"], expected_variance, rtol=2e-6)
     np.testing.assert_allclose(
         statistics["time_diff_mean"], expected_delta_mean, rtol=2e-6
     )
     np.testing.assert_allclose(
         statistics["time_diff_variance"], expected_delta_variance, rtol=2e-6
     )
-    np.testing.assert_allclose(statistics["time_mean"], values.mean(axis=0), rtol=2e-6)
+    np.testing.assert_allclose(
+        statistics["time_mean"], values.mean(axis=0, dtype=np.float64), rtol=2e-6
+    )
 
 
 def test_normalizer_validates_statistics_and_channel_selection():

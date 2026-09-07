@@ -14,7 +14,7 @@ parameter-count, checkpoint and rollout tests.
 
 ```text
 data/dataset/
-├── era5_1995_2019_0p5deg_26ch.zarr
+├── era5_1995_2020_0p5deg_26ch.zarr
 └── stats/
     ├── means.npy
     ├── stds.npy
@@ -29,12 +29,12 @@ Download/regrid in restartable seven-day batches, then compute statistics from
 the logical training range only:
 
 ```bash
-python data/test_download_sample.py
+python data/test_download_sample.py --output data/dataset/era5_sample_audited.zarr
 python data/download_data.py --confirm-full-download
 python scripts/compute_stats.py --time-step 1
-python scripts/validate_data.py
+python scripts/validate_data.py --full-scan --output runs/data_validation.json
 python scripts/check_backend.py --device auto
-python scripts/audit_training_readiness.py
+python scripts/audit_training_readiness.py --sample-zarr data/dataset/era5_sample_audited.zarr
 python scripts/benchmark_sample.py --device auto --height 121 --width 240
 python scripts/estimate_vram.py --batch-size 4 --gpu-vram-gib 24
 python scripts/benchmark_model.py --batch-size 4 --rollout-steps 1
@@ -46,27 +46,31 @@ contract was introduced must be preserved under another name or regenerated;
 it will not be resumed silently. Flattened stores also carry units and source
 metadata separately for every channel.
 
-One physical Zarr store is sliced chronologically in the loader, so field data
-are not duplicated. Training contains twenty-four complete calendar years
-(1995--2018). The first 16 days of 2019 are validation, and 2019-01-17 through
-2019-02-16 is an untouched 31-day test period. At six-hour cadence this gives
-35,064 training states, 64 validation states, and 124 test states. Validation
-supports four 60-step starts and 3/6/9/12/15-day milestone reports; test supports four 120-step start
-indices for a complete 30-day rollout.
+One physical Zarr store is sliced chronologically: training is 1995--2018,
+validation is the full year 2019, and the untouched test year is 2020. This
+provides 35,064 / 1,460 / 1,464 states respectively. Default training selection
+uses 32 evenly spaced validation initializations with 60 leads. The same panel
+must be used for all candidate models; final evaluation should cover more
+initializations and report uncertainty across weather episodes.
+
+Statistics are streamed in float64 with bounded memory, written as immutable
+version-4 bundles, and checked by artifact hashes, coordinates, units, cadence
+and training interval. Existing statistics must be recomputed into a **new**
+directory. The old 1995--early-2019 store is insufficient for this protocol;
+do not rename it to satisfy the new filename. Preserve it and download the
+missing periods under a new download contract.
 
 `audit_training_readiness.py` projects both the compressed download and peak
 disk usage from the local one-day sample. `estimate_vram.py` is intentionally a
-conservative analytical planner; `benchmark_model.py` is the authoritative
-allocated/reserved CUDA measurement and must run on the target NVIDIA GPU.
+conservative analytical planner; `preflight_a100.py` measures actual optimizer updates and long validation on
+the target GPU; a analytical planner or random-loss benchmark is insufficient.
 
 ## Recommended training curriculum
 
-The default stage has `epochs=0` and `patience=0`: it has no epoch limit and
-does not stop through early stopping. Stop it manually after inspecting the
-validation/rollout logs. The cosine scheduler still uses a finite 25-epoch
-horizon and then holds `min_learning_rate`; override that horizon with
-`--scheduler-epochs`. Passing a positive `--epochs` restores a finite run and,
-unless explicitly overridden, uses the same value as the scheduler horizon.
+The default budget is 25 epochs. `--epochs 0` explicitly opts into an unlimited
+run; it is not the default. Use a fixed budget for comparisons, and choose
+checkpoints using validation only. See [the A100 runbook](docs/A100_TRAINING.md)
+for data verification, actual CUDA preflight, and launch commands.
 
 Start with one-step training. Increase rollout length only after convergence,
 initializing a new optimizer stage from the previous best weights:
@@ -189,3 +193,29 @@ Primary references: [SFNO paper](https://proceedings.mlr.press/v202/bonev23a.htm
 [NVIDIA Makani SFNO configuration](https://github.com/NVIDIA/makani/blob/main/config/sfnonet.yaml),
 [Makani data statistics guide](https://github.com/NVIDIA/makani/blob/main/data_process/Readme.md),
 and [torch-harmonics](https://github.com/NVIDIA/torch-harmonics).
+
+## Audit corrections before accelerator training
+
+The original [scientific audit](audit/2026-09-06/SCIENTIFIC_AUDIT_REPORT.md) describes
+the pre-fix snapshot. The [remediation ledger](docs/AUDIT_REMEDIATION.md) records
+implemented fixes, tests and outstanding experiments. Complex degree kernels
+share nonnegative harmonic orders; this is not a guarantee of full SO(3)
+equivariance. Scalar wind channels and absent external forcing remain modeling
+approximations to investigate through controlled experiments.
+
+Evaluation rejects grid/cadence/unit mismatches and overlap with checkpoint
+training or validation periods even when data paths are overridden. It reports
+persistence and training-climatology baselines, per-channel physical bias,
+spatial variance ratio and ACC valid counts. Output directories with completed
+results are not overwritten. `--allow-data-mismatch` only marks diagnostic
+statistics changes; it does not permit wrong geometry or held-out leakage.
+
+For deployment after the last observed timestamp, use `rollout.py --forecast-only`
+with `--start-index` selecting the desired initialization; no future truth is
+required. Forecast Zarr outputs contain explicit initial and valid times.
+
+The forward SHT additionally separates the constant component analytically to
+prevent float32 quadrature leakage amplified by InstanceNorm. This preserves
+constants on the tested full CPU grid without adding parameters; numerical
+results can differ from unmodified torch-harmonics. Near-constant sensitivity
+and CUDA behavior require the preflight/pilot checks in the A100 runbook.

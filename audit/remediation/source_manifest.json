@@ -1,0 +1,230 @@
+{
+  "recorded_at_utc": "2026-09-06T19:48:44.333539+00:00",
+  "base_commit": "f3b3da3155915daf942369090db30b016cb13a78",
+  "files": [
+    {
+      "path": ".gitignore",
+      "sha256": "aca0b4b964dd2ffc84e1eae483c4f897674ae602b791ce87db77e23d87e0d613"
+    },
+    {
+      "path": "README.md",
+      "sha256": "0e4cf62411d3d47382d159603a8d0e5fb8aa507e36a6b9c13d5154643442fb3b"
+    },
+    {
+      "path": "configs/__init__.py",
+      "sha256": "2197585e92c04398b0c3f92b32b31c375e994e34901ebc5a13f051d7f5014476"
+    },
+    {
+      "path": "configs/download_data_config.py",
+      "sha256": "ddd83f86cb20dd35b7ec7bd2f2de462ae80e079754d85eaae74d780b0c9a598d"
+    },
+    {
+      "path": "configs/model_config.py",
+      "sha256": "79cb49563649546e0687926ba61593a4127ad748a76a65fbe5fc08c525448f80"
+    },
+    {
+      "path": "configs/pipeline_config.py",
+      "sha256": "da8a822c9fa671c13d6d841dc0e3f7f73bc96d37f24c872e3b3f24c252954d89"
+    },
+    {
+      "path": "data/__init__.py",
+      "sha256": "77152f450afe6416f5804d143f19185950f70260d1105d394240917754ecdb5b"
+    },
+    {
+      "path": "data/download_data.py",
+      "sha256": "272d20c5fd78bea4813496bdf68dbcfd5979a29e0ee32303f358615f48a5571b"
+    },
+    {
+      "path": "data/explore_data.py",
+      "sha256": "14f68721382add1e2ac30921462e18a0742230faddf29e93d66a894dfaa5e3ca"
+    },
+    {
+      "path": "data/test_download_sample.py",
+      "sha256": "d43d45ea0faa8b96d5252eaa82f8551150550a48ef28f53b8b562d594e1c63c3"
+    },
+    {
+      "path": "docs/A100_TRAINING.md",
+      "sha256": "06382b57e8815e09c11e8d53ab11fb623ff47bdf45ad1a15511d921e30ee4e23"
+    },
+    {
+      "path": "docs/AUDIT_REMEDIATION.md",
+      "sha256": "e33062233b592bce213f5a6fe296a0b511b943086e560a7714c39f5b5d8b63b1"
+    },
+    {
+      "path": "notebook/01_model_architecture.ipynb",
+      "sha256": "3ceb131649e96809d44fe38c3b76906c1ced619a1b72c1f3f158e56f71e7d514"
+    },
+    {
+      "path": "notebook/02_data_exploration.ipynb",
+      "sha256": "d4879c53197f981edb9726c47b222c8e1994f00309d15d53b656fdbb1fd8bc82"
+    },
+    {
+      "path": "pyproject.toml",
+      "sha256": "a8584ccbe54cb8fb872fe03a1a903c6fb556b21668bc0ce90d5bb4eaf5a00323"
+    },
+    {
+      "path": "pytest.ini",
+      "sha256": "58342927762967087420be340b0048197e9263b7035bdaceb0d6bd89a26efccb"
+    },
+    {
+      "path": "requirements-lock.txt",
+      "sha256": "f9e6d5c8f72b104d42972ac06ba1b79ffaa02b00ba7c7a1620b3893e5120e0f9"
+    },
+    {
+      "path": "requirements.txt",
+      "sha256": "a2ddfb6135273e2db9445d2cf459c67cd93cc899815d31ac8be51c7aed7345ce"
+    },
+    {
+      "path": "scripts/analyze_gradient_risks.py",
+      "sha256": "247eec5471722213cb696f4d61cbdde8245e6ebfdc283f1e51dcf571aa5c5180"
+    },
+    {
+      "path": "scripts/audit_training_readiness.py",
+      "sha256": "6a4d24f490847e5a162ddf32f677c742abe5384dfa8d4c138d6a9b300fea85f3"
+    },
+    {
+      "path": "scripts/benchmark_model.py",
+      "sha256": "f1912a8bc2c8879e5f091c2765970ed34124394ec183facb12f82dde76d92613"
+    },
+    {
+      "path": "scripts/benchmark_sample.py",
+      "sha256": "5eb58c0051cda3a4f04c2271480329a5a8cc5e0ecdf98115eead25a5dfa05942"
+    },
+    {
+      "path": "scripts/check_backend.py",
+      "sha256": "1b24918bfc38676d392d2dea406427ff413f6829e8881afe087a00c3a184a72e"
+    },
+    {
+      "path": "scripts/compute_stats.py",
+      "sha256": "61b99c603727e54b79f763d6e19fa5298cc9e8c30a16030d87c1c06b99d1d004"
+    },
+    {
+      "path": "scripts/estimate_vram.py",
+      "sha256": "a5e23ebb5bd837718882fd778e9159256d6cd91203f269a14557dbbcc0dc0ed7"
+    },
+    {
+      "path": "scripts/evaluate.py",
+      "sha256": "67aae71152654632d441d71eed2b5c406e52852f1c96eef286239da02c783a75"
+    },
+    {
+      "path": "scripts/plot_results.py",
+      "sha256": "d62cb30fb2311b5622fc94ee607a8c7fc979ff81cb403a30f08ab37394d1a334"
+    },
+    {
+      "path": "scripts/preflight_a100.py",
+      "sha256": "f125b9e05d9a16567f3e87b8220a840fed78e15d155a0cf39c86600bd2f22a66"
+    },
+    {
+      "path": "scripts/rollout.py",
+      "sha256": "c28f01f0fdf2a1bf2f700146749fd44f061cc5a9352f7d9d0cf494e5832a1c53"
+    },
+    {
+      "path": "scripts/split_dataset.py",
+      "sha256": "1a15f21ef68b0829470d98d75707aa043377c08352b580f3b388cf1ce78d1360"
+    },
+    {
+      "path": "scripts/train.py",
+      "sha256": "7fbdc31ff4ceff58da9be88330f1a41b0dd019085b90bf1868a7ac0e98d456fe"
+    },
+    {
+      "path": "scripts/validate_data.py",
+      "sha256": "a7234795c5d9951c2aa97ee10d61a2cd646e822702eeb65b425ca53112b46052"
+    },
+    {
+      "path": "src/__init__.py",
+      "sha256": "a9450ad88696dd38a69c1fb6e5cbe10ec24bc66e65b2f4b3f2b0cf3a3dd5a319"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/__init__.py",
+      "sha256": "69a7139dd2338ec12efa3eb8ee073cb5c079afc9f2d5c58561eff032e8117a85"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/data/__init__.py",
+      "sha256": "72d4e19ed035323e9dd228f6a77219dedebf30d7bfd34a46b367ee8e4d08ba19"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/data/loader.py",
+      "sha256": "1c2c0a0f99edae08b98d178ef6944945e4c6ceb6fe5ffa80477c6fd9e6dbca70"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/data/normalization.py",
+      "sha256": "407574e5bbde6370ac4888fe9bab8cc6a801834e79a5d15ac819733cd3e56f48"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/models/__init__.py",
+      "sha256": "4e187241d3d785533c37321f7941b350ab1e7cb6db1d28aabe6dd6237aaab689"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/models/loss.py",
+      "sha256": "4a735e38ddd651ad34a02856b55c36de26b646f038b8a19c625880b6d2353dde"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/models/model.py",
+      "sha256": "778f3addb690e4278db54548d3692d358645eaace6350f00cfc28387dd4eb0e4"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/models/transforms.py",
+      "sha256": "0bdfc90c85a575f0f3090cb835cb9f2e91b97bd259858a749002fd64a9fbc8b1"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/pipeline/__init__.py",
+      "sha256": "b93c63df75054d12425c59654e5e957f28a4ffab5d3d78088230fa95031cc928"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/pipeline/checkpoint.py",
+      "sha256": "e83aaebbb790a0a8f4f88192e060e4f3d3c944d910151fbc0e08363febea1d6c"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/pipeline/contracts.py",
+      "sha256": "51adbb3631375081d659a149204a77f40a65a7c405abd28c4306c46b50f5a19c"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/pipeline/dependencies.py",
+      "sha256": "24061166eea96e1bef6dac5c78c9372ede843d3d5ba223b68ef1e6af0b0cd9ba"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/pipeline/forecast.py",
+      "sha256": "1f0edf1bdb8b4e090237638f33a52aa317c6ce0f3f9e5a2e7854c0cd32e86403"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/pipeline/metrics.py",
+      "sha256": "0fac217dd1c9dc58b604507bbdb47d42153a7ee2d313f143d469181a1452739d"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/pipeline/runtime.py",
+      "sha256": "b5d3aa524dac9f92c8f98d729baf29b961d5474647a8356f8d39c6e7ac5a6247"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/pipeline/schedule.py",
+      "sha256": "7e6a9782936ad315575a11349e433cde0aa4a9b1bb9707242110560947400383"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/utils/__init__.py",
+      "sha256": "f0eb8c6b496148a981efa14556e34023dd618212b35dd32749437b19c5087d88"
+    },
+    {
+      "path": "src/neural_atmosphere_operator/utils/logger.py",
+      "sha256": "9f89fb8e9f28c1f6b67278d17c408649349f9c28920a8f35e5e406afc313c27b"
+    },
+    {
+      "path": "test/test_audit_regressions.py",
+      "sha256": "603ee009d9dd2a9a2aee2166dc12c5885ad33308566671a6be4c644d8656930b"
+    },
+    {
+      "path": "test/test_checkpoint_resume.py",
+      "sha256": "f63ef44df0223d9ec49c3f957fcf623ec30725b83f950fa1556cfa23c526a07d"
+    },
+    {
+      "path": "test/test_data_pipeline.py",
+      "sha256": "56f7a04e0008fc92dfd0e58da0e23a8fbf25f73ff0f48dbea8542c7124f7ed2f"
+    },
+    {
+      "path": "test/test_model_and_loss.py",
+      "sha256": "b6b5e22e9d568c24d3ef5fa3daf1209d55b78b5f739707069dfeefae696d970f"
+    },
+    {
+      "path": "test/test_pipeline.py",
+      "sha256": "25840c391e3c4ff3c36133b4dcadbbff5cc87028701149dac1362ba2b5dc4bf8"
+    }
+  ]
+}

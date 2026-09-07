@@ -1,0 +1,2 @@
+2026-09-06 20:36:15 | INFO | neural_atmosphere_operator | Saved sample 0
+2026-09-06 20:36:15 | INFO | neural_atmosphere_operator | Rollout written to /private/var/folders/2n/f20_1_jd7bjgp25m_p5shyb40000gn/T/nao-audit-integration-h1mb1rqo/forecast.zarr

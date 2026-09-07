@@ -16,7 +16,7 @@ class DataPaths:
 
     @property
     def dataset(self) -> Path:
-        return self.root / "era5_1995_2019_0p5deg_26ch.zarr"
+        return self.root / "era5_1995_2020_0p5deg_26ch.zarr"
 
     @property
     def train(self) -> Path:
@@ -34,8 +34,8 @@ class DataPaths:
         """Return non-overlapping inclusive logical ranges in the single store."""
         ranges = {
             "train": ("1995-01-01", "2018-12-31"),
-            "valid": ("2019-01-01", "2019-01-16"),
-            "test": ("2019-01-17", "2019-02-16"),
+            "valid": ("2019-01-01", "2019-12-31"),
+            "test": ("2020-01-01", "2020-12-31"),
         }
         try:
             return ranges[split]
@@ -65,9 +65,8 @@ class DataPaths:
 class TrainingConfig:
     """Conservative defaults for the 24-year 0.5-degree SFNO corpus."""
 
-    # Zero means no epoch limit. The run stops only by an external/manual
-    # signal; resume returns to the most recent completed epoch.
-    epochs: int = 0
+    # A finite initial budget; zero remains an explicit opt-in for unlimited runs.
+    epochs: int = 25
     # An infinite run still needs a finite cosine-decay horizon. After this
     # many epochs the scheduler remains at min_learning_rate.
     scheduler_epochs: int = 25

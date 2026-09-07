@@ -1,0 +1,24 @@
+{
+  "include": [
+    "src",
+    "configs",
+    "scripts",
+    "test"
+  ],
+  "exclude": [
+    "audit",
+    "data/dataset",
+    "**/__pycache__",
+    "**/.pytest_cache",
+    "**/.venv"
+  ],
+  "extraPaths": [
+    ".",
+    "src",
+    "configs",
+    "../neuraloperator"
+  ],
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "none",
+  "reportMissingModuleSource": "none"
+}

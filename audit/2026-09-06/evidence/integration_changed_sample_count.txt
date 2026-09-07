@@ -1,0 +1,4 @@
+2026-09-06 20:36:06 | INFO | neural_atmosphere_operator | stage=sfno_1step device=cpu parameters=1792 train=18 valid=18 effective_batch=8 validation_batch=1 train_rollout=1 validation_rollout=2 history=0
+2026-09-06 20:36:06 | INFO | neural_atmosphere_operator | data_loader workers=0 prefetch_factor=2 persistent=False pin_memory=False
+2026-09-06 20:36:06 | INFO | neural_atmosphere_operator | loss channel_weighting=auto temp_diff_normalization=True loss_scaler=False input_noise_std=0 range=[0.002648, 0.05294]
+2026-09-06 20:36:06 | INFO | neural_atmosphere_operator | epoch=2 train=2.95088 selection=4.44113 valid_final=4.94731 final_rmse=2.48876 lr=0.0005 time=0.2s data_wait=58.3% grad_norm=1.855 clip=100.0% nonfinite=0 best

@@ -78,9 +78,7 @@ def _validate_checkpoint_payload(checkpoint: Any, path: Path) -> dict[str, Any]:
         raise ValueError(f"Checkpoint in {path} contains an invalid state mapping")
     if not {"python", "numpy", "torch_cpu"}.issubset(checkpoint["rng_state"]):
         raise ValueError(f"Checkpoint in {path} has an incomplete RNG state")
-    if not {"optimizer", "scheduler", "scaler"}.issubset(
-        checkpoint["state_classes"]
-    ):
+    if not {"optimizer", "scheduler", "scaler"}.issubset(checkpoint["state_classes"]):
         raise ValueError(f"Checkpoint in {path} has incomplete state class metadata")
     if not isinstance(checkpoint["train_generator_state"], torch.Tensor):
         raise ValueError(f"Checkpoint in {path} has an invalid loader generator state")
@@ -111,9 +109,7 @@ def restore_rng_state(state: dict[str, Any]) -> None:
     if "torch_cuda" in state:
         if not torch.cuda.is_available():
             raise RuntimeError("Checkpoint contains CUDA RNG but CUDA is unavailable")
-        torch.cuda.set_rng_state_all(
-            [value.cpu() for value in state["torch_cuda"]]
-        )
+        torch.cuda.set_rng_state_all([value.cpu() for value in state["torch_cuda"]])
     if "torch_mps" in state:
         if not torch.backends.mps.is_available():
             raise RuntimeError("Checkpoint contains MPS RNG but MPS is unavailable")
@@ -141,6 +137,16 @@ def save_checkpoint(
     if scheduler.last_epoch != completed_updates:
         raise ValueError(
             "Scheduler progress must match the completed optimizer-update count"
+        )
+    tensors = list(model.state_dict().values()) + [
+        value
+        for state in optimizer.state.values()
+        for value in state.values()
+        if isinstance(value, torch.Tensor)
+    ]
+    if any(not torch.isfinite(value).all() for value in tensors):
+        raise FloatingPointError(
+            "Refusing to replace last-good checkpoint with non-finite model/optimizer state"
         )
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -202,9 +208,7 @@ def restore_training_state(
         if checkpoint["state_classes"].get(name) != value
     ]
     if mismatches:
-        raise ValueError(
-            "Resume state class mismatch in: " + ", ".join(mismatches)
-        )
+        raise ValueError("Resume state class mismatch in: " + ", ".join(mismatches))
     model.load_state_dict(checkpoint["model_state"], strict=True)
     # Adam/AdamW moments, per-parameter step counters and parameter-group
     # hyperparameters all live inside optimizer_state.

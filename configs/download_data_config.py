@@ -50,7 +50,9 @@ DEFAULT_LEVEL_SELECTIONS: tuple[tuple[str, tuple[int, ...]], ...] = (
 
 def channel_names(
     surface_variables: tuple[str, ...] = DEFAULT_SURFACE_VARIABLES,
-    level_selections: tuple[tuple[str, tuple[int, ...]], ...] = DEFAULT_LEVEL_SELECTIONS,
+    level_selections: tuple[
+        tuple[str, tuple[int, ...]], ...
+    ] = DEFAULT_LEVEL_SELECTIONS,
 ) -> tuple[str, ...]:
     """Return the canonical flattened state-channel order."""
     return surface_variables + tuple(
@@ -68,15 +70,13 @@ class WeatherBenchDownloadConfig:
     surface_variables: tuple[str, ...] = DEFAULT_SURFACE_VARIABLES
     level_selections: tuple[tuple[str, tuple[int, ...]], ...] = DEFAULT_LEVEL_SELECTIONS
     start_date: str = "1995-01-01"
-    # Train: 1995-2018; validation: 2019-01-01..16; test: 2019-01-17..02-16.
-    # Sixteen validation days provide four independent UTC phases for a
-    # 60-step (15-day) rollout.  The 31-day test range similarly provides the
-    # initial state plus 120 six-hour targets for a complete 30-day rollout.
-    end_date: str = "2019-02-16"
+    # Full, disjoint years for seasonal validation and held-out testing.
+    # Training remains 1995-2018; validation 2019; untouched test 2020.
+    end_date: str = "2020-12-31"
     time_stride_hours: int = 6
     target_resolution_degrees: float = 0.5
     download_batch_days: int = 7
-    output_zarr_path: str = "data/dataset/era5_1995_2019_0p5deg_26ch.zarr"
+    output_zarr_path: str = "data/dataset/era5_1995_2020_0p5deg_26ch.zarr"
 
     def __post_init__(self) -> None:
         if not self.surface_variables and not self.level_selections:
@@ -91,11 +91,17 @@ class WeatherBenchDownloadConfig:
                 raise ValueError(f"duplicate pressure level for {variable}")
             unknown = set(levels) - set(AVAILABLE_PRESSURE_LEVELS)
             if unknown:
-                raise ValueError(f"levels not in wb13 for {variable}: {sorted(unknown)}")
+                raise ValueError(
+                    f"levels not in wb13 for {variable}: {sorted(unknown)}"
+                )
         if self.start_date > self.end_date:
             raise ValueError("start_date must be before or equal to end_date")
         if self.time_stride_hours < 6 or self.time_stride_hours % 6:
             raise ValueError("time_stride_hours must be a positive multiple of 6")
+        if (self.download_batch_days * 24) % self.time_stride_hours:
+            raise ValueError(
+                "download batch duration must be divisible by time_stride_hours to preserve cadence phase"
+            )
         if self.target_resolution_degrees != 0.5:
             raise ValueError("the validated downloader currently supports 0.5 degrees")
         if self.download_batch_days < 1:

@@ -1,0 +1,15 @@
+2026-09-07 02:46:53 | INFO | neural_atmosphere_operator | stage=sfno_1step device=cpu parameters=24064 train=1 valid=1 effective_batch=1 validation_batch=1 train_rollout=1 validation_rollout=1 history=0
+2026-09-07 02:46:53 | INFO | neural_atmosphere_operator | data_loader workers=0 prefetch_factor=2 persistent=False pin_memory=False
+2026-09-07 02:46:53 | INFO | neural_atmosphere_operator | loss channel_weighting=auto temp_diff_normalization=True loss_scaler=False input_noise_std=0 range=[0.01447, 0.6151]
+2026-09-07 02:46:54 | INFO | neural_atmosphere_operator | epoch=1 train=16.7129 selection=16.9253 valid_final=16.9253 final_rmse=1.70094 lr=0.001 time=0.7s data_wait=22.2% grad_norm=47.7 clip=100.0% nonfinite=0 best
+2026-09-07 02:46:55 | INFO | neural_atmosphere_operator | epoch=2 train=16.607 selection=15.9217 valid_final=15.9217 final_rmse=1.66153 lr=0.00098 time=0.6s data_wait=22.8% grad_norm=47.27 clip=100.0% nonfinite=0 best
+2026-09-07 02:46:55 | INFO | neural_atmosphere_operator | epoch=3 train=15.5944 selection=15.0179 valid_final=15.0179 final_rmse=1.62523 lr=0.000921 time=0.6s data_wait=23.6% grad_norm=43.03 clip=100.0% nonfinite=0 best
+2026-09-07 02:46:56 | INFO | neural_atmosphere_operator | epoch=4 train=14.6825 selection=14.2364 valid_final=14.2364 final_rmse=1.59319 lr=0.000828 time=0.6s data_wait=22.3% grad_norm=39.09 clip=100.0% nonfinite=0 best
+2026-09-07 02:46:56 | INFO | neural_atmosphere_operator | epoch=5 train=13.8943 selection=13.5866 valid_final=13.5866 final_rmse=1.56604 lr=0.000708 time=0.6s data_wait=21.3% grad_norm=35.62 clip=100.0% nonfinite=0 best
+2026-09-07 02:46:57 | INFO | neural_atmosphere_operator | epoch=6 train=13.2392 selection=13.0679 valid_final=13.0679 final_rmse=1.544 lr=0.000572 time=0.6s data_wait=22.8% grad_norm=32.72 clip=100.0% nonfinite=0 best
+2026-09-07 02:46:58 | INFO | neural_atmosphere_operator | epoch=7 train=12.7166 selection=12.6725 valid_final=12.6725 final_rmse=1.52697 lr=0.000429 time=0.6s data_wait=23.4% grad_norm=30.41 clip=100.0% nonfinite=0 best
+2026-09-07 02:46:58 | INFO | neural_atmosphere_operator | epoch=8 train=12.3185 selection=12.3884 valid_final=12.3884 final_rmse=1.51459 lr=0.000293 time=0.6s data_wait=23.8% grad_norm=28.65 clip=100.0% nonfinite=0 best
+2026-09-07 02:46:59 | INFO | neural_atmosphere_operator | epoch=9 train=12.0326 selection=12.2006 valid_final=12.2006 final_rmse=1.50634 lr=0.000173 time=0.6s data_wait=23.4% grad_norm=27.4 clip=100.0% nonfinite=0 best
+2026-09-07 02:46:59 | INFO | neural_atmosphere_operator | epoch=10 train=11.8436 selection=12.0916 valid_final=12.0916 final_rmse=1.50152 lr=8.03e-05 time=0.6s data_wait=23.6% grad_norm=26.57 clip=100.0% nonfinite=0 best
+2026-09-07 02:47:00 | INFO | neural_atmosphere_operator | epoch=11 train=11.734 selection=12.0416 valid_final=12.0416 final_rmse=1.49931 lr=2.12e-05 time=0.6s data_wait=22.1% grad_norm=26.1 clip=100.0% nonfinite=0 best
+2026-09-07 02:47:01 | INFO | neural_atmosphere_operator | epoch=12 train=11.6838 selection=12.0285 valid_final=12.0285 final_rmse=1.49872 lr=1e-06 time=0.6s data_wait=24.1% grad_norm=25.89 clip=100.0% nonfinite=0 best

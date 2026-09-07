@@ -60,9 +60,14 @@ def amp_context(
     return torch.autocast(device_type="cuda", dtype=dtype)
 
 
-def move_batch(batch: dict[str, Tensor], device: torch.device) -> dict[str, Tensor]:
+def move_batch(
+    batch: dict[str, Tensor], device: torch.device, *, keep_targets_cpu: bool = False
+) -> dict[str, Tensor]:
     return {
-        key: value.to(device, non_blocking=device.type == "cuda")
+        key: value
+        if key in {"time_index", "target_time_indices"}
+        or (keep_targets_cpu and key == "target")
+        else value.to(device, non_blocking=device.type == "cuda")
         for key, value in batch.items()
     }
 
@@ -96,10 +101,15 @@ def build_loader(
     pin_memory: bool = True,
     prefetch_factor: int = 2,
     persistent_workers: bool = True,
+    sample_selection: str = "first",
+    require_targets: bool = True,
+    lazy_targets: bool = False,
 ) -> tuple[Any, AtmosphereZarrDataset]:
     resolved_data_path = resolve_data_path(paths, split, data_path)
     use_logical_range = resolved_data_path == paths.dataset.expanduser().resolve()
-    start_time, end_time = paths.split_time_range(split) if use_logical_range else (None, None)
+    start_time, end_time = (
+        paths.split_time_range(split) if use_logical_range else (None, None)
+    )
     config = AtmosphereDatasetConfig(
         data_path=resolved_data_path,
         means_path=(means_path or paths.means).expanduser().resolve(),
@@ -111,11 +121,23 @@ def build_loader(
         time_step=time_step,
         normalize=True,
         max_samples=max_samples,
+        sample_selection=sample_selection,
+        require_targets=require_targets,
+        lazy_targets=lazy_targets,
         spatial_crop=spatial_crop,
         add_noise=split == "train" and input_noise_std > 0.0,
         noise_std=input_noise_std,
     )
     dataset = AtmosphereZarrDataset(config, training=split == "train")
+    if use_logical_range:
+        if (
+            str(dataset.times[0].astype("datetime64[D]")) != start_time
+            or str(dataset.times[-1].astype("datetime64[D]")) != end_time
+        ):
+            dataset.close()
+            raise ValueError(
+                f"Canonical {split} split requires complete interval {start_time}..{end_time}; download missing periods"
+            )
     loader = create_data_loader(
         dataset,
         batch_size=batch_size,
@@ -222,9 +244,20 @@ def dataset_signature(dataset: AtmosphereZarrDataset) -> dict[str, Any]:
     )
     metadata = next((item for item in metadata_candidates if item.exists()), None)
     stat = metadata.stat() if metadata is not None else path.stat()
+    # Catch payload edits even when .zmetadata is unchanged. This inexpensive
+    # file inventory is distinct from the full decoded-content checksum made
+    # by compute_stats/validate_data --full-scan.
+    inventory = hashlib.sha256()
+    for item in sorted(path.rglob("*")):
+        if item.is_file():
+            payload_stat = item.stat()
+            inventory.update(
+                f"{item.relative_to(path)}:{payload_stat.st_size}:{payload_stat.st_mtime_ns}\n".encode()
+            )
     return {
         "path": str(path),
         "metadata_size": stat.st_size,
+        "payload_inventory_sha256": inventory.hexdigest(),
         "metadata_mtime_ns": stat.st_mtime_ns,
         "timesteps": dataset.total_timesteps,
         "first_time": dataset.first_time,
@@ -232,6 +265,13 @@ def dataset_signature(dataset: AtmosphereZarrDataset) -> dict[str, Any]:
         "cadence_hours": dataset.cadence_hours,
         "spatial_shape": dataset.spatial_shape,
         "channels": dataset.channel_names,
+        "channel_units": dataset.channel_units,
+        "samples": len(dataset),
+        "sample_indices_sha256": hashlib.sha256(
+            dataset.sample_indices.tobytes()
+        ).hexdigest(),
+        "latitude": dataset.latitudes.tolist(),
+        "longitude": dataset.longitudes.tolist(),
     }
 
 

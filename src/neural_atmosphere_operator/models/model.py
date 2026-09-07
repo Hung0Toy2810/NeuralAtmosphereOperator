@@ -6,10 +6,10 @@ import inspect
 from importlib import import_module
 from typing import Any, cast
 
-import torch
 from torch import Tensor, nn
 
 from configs.model_config import AtmosphereModelConfig
+from .transforms import stabilize_sht_constants
 
 
 # Follow NeuralOceanOperator's dependency boundary: the reference spherical
@@ -101,7 +101,8 @@ def _build_sfno(config: AtmosphereModelConfig) -> nn.Module:
     elif "big_skip" in constructor_parameters or accepts_extra_options:
         options["big_skip"] = False
     if not accepts_extra_options and not {
-        "residual_prediction", "big_skip"
+        "residual_prediction",
+        "big_skip",
     }.intersection(constructor_parameters):
         raise RuntimeError(
             "Installed SFNO API does not expose a residual control; external "
@@ -119,7 +120,10 @@ def _build_sfno(config: AtmosphereModelConfig) -> nn.Module:
             if name in constructor_parameters
         }
     )
-    return _SFNO_CLASS(**supported_options)
+    model = _SFNO_CLASS(**supported_options)
+    if config.stabilize_sht_constants:
+        stabilize_sht_constants(model)
+    return model
 
 
 class AtmosphereNeuralOperator(nn.Module):
@@ -174,18 +178,9 @@ class AtmosphereNeuralOperator(nn.Module):
                 "of out_channels"
             )
 
-        forecasts: list[Tensor] = []
-        current = x
-        for _ in range(steps):
-            prediction = self.forward(current)
-            forecasts.append(prediction)
-            if self.config.in_channels == self.config.out_channels:
-                current = prediction
-            else:
-                current = torch.cat(
-                    (current[:, self.config.out_channels :], prediction), dim=1
-                )
-        return forecasts
+        from neural_atmosphere_operator.pipeline.forecast import forecast_states
+
+        return list(forecast_states(self, x, steps))
 
     def _validate_input(self, x: Tensor) -> None:
         expected_shape = (self.config.in_channels, *self.config.img_size)

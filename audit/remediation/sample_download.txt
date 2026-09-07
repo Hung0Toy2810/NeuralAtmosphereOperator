@@ -1,0 +1,34 @@
+Opening gs://weatherbench2/datasets/era5/1959-2023_01_10-wb13-6h-1440x721_with_derived_variables.zarr
+Selected 26 channels, 4 timesteps, grid=361x720
+Writing 4 timesteps (26 channels) to /Users/luongnguyenthanhhung/Documents/TLCN/NeuralAtmosphereOperator/data/dataset/era5_sample_audited.zarr
+Download finished.
+Sample path: /Users/luongnguyenthanhhung/Documents/TLCN/NeuralAtmosphereOperator/data/dataset/era5_sample_audited.zarr (72.47 MB)
+Timesteps: 4 -> ['2018-01-01T00:00', '2018-01-01T06:00', '2018-01-01T12:00', '2018-01-01T18:00']
+Variable                         |        Min |        Max |       Mean |        Std |  NaNs
+-------------------------------------------------------------------------------------
+10m_u_component_of_wind          |     -17.79 |      24.22 |       0.03 |       5.10 |     0
+10m_v_component_of_wind          |     -18.93 |      20.44 |      -0.17 |       4.40 |     0
+2m_temperature                   |     222.85 |     316.93 |     277.63 |      19.24 |     0
+surface_pressure                 |   50334.89 |  103781.88 |   96668.43 |    9363.73 |     0
+mean_sea_level_pressure          |   94709.14 |  105585.80 |  100944.66 |    1324.69 |     0
+total_column_water_vapour        |       0.14 |      71.59 |      17.26 |      16.41 |     0
+geopotential@1000hPa             |   -4318.84 |    3960.02 |     741.03 |    1038.72 |     0
+geopotential@850hPa              |    8465.20 |   16378.02 |   13692.45 |    1339.66 |     0
+geopotential@500hPa              |   47855.58 |   58531.62 |   53932.20 |    3183.15 |     0
+geopotential@250hPa              |   91739.00 |  108136.31 |  100991.31 |    5288.05 |     0
+geopotential@50hPa               |  186764.23 |  203669.17 |  199400.56 |    4601.52 |     0
+u_component_of_wind@1000hPa      |     -21.29 |      30.01 |       0.10 |       5.68 |     0
+u_component_of_wind@850hPa       |     -32.91 |      47.88 |       1.50 |       7.97 |     0
+u_component_of_wind@500hPa       |     -31.14 |      67.98 |       6.92 |      12.17 |     0
+u_component_of_wind@250hPa       |     -32.26 |      93.04 |      12.98 |      18.66 |     0
+v_component_of_wind@1000hPa      |     -22.71 |      21.60 |      -0.18 |       4.86 |     0
+v_component_of_wind@850hPa       |     -33.41 |      37.35 |      -0.16 |       5.65 |     0
+v_component_of_wind@500hPa       |     -40.68 |      51.97 |       0.10 |       8.36 |     0
+v_component_of_wind@250hPa       |     -60.89 |      57.49 |       0.25 |      12.72 |     0
+temperature@850hPa               |     238.67 |     306.49 |     273.97 |      14.25 |     0
+temperature@500hPa               |     225.02 |     273.62 |     252.33 |      12.99 |     0
+temperature@250hPa               |     204.37 |     236.81 |     223.11 |       7.58 |     0
+temperature@100hPa               |     183.44 |     234.20 |     209.17 |      13.22 |     0
+specific_humidity@1000hPa        |       0.00 |       0.02 |       0.01 |       0.01 |     0
+specific_humidity@850hPa         |       0.00 |       0.02 |       0.00 |       0.00 |     0
+relative_humidity@500hPa         |       0.00 |       1.05 |       0.40 |       0.26 |     0
