@@ -64,13 +64,14 @@ def test_validation_and_test_cover_disjoint_full_years() -> None:
     assert paths.split_time_range("train") == ("1995-01-01", "2018-12-31")
     assert paths.split_time_range("valid") == ("2019-01-01", "2019-12-31")
     assert paths.split_time_range("test") == ("2020-01-01", "2020-12-31")
-    assert TrainingConfig().validation_rollout_steps == 60
+    assert TrainingConfig().rollout_steps == 1
     assert TrainingConfig().validation_batch_size == 1
     assert TrainingConfig().epochs == 25
     assert TrainingConfig().scheduler_epochs == 25
-    assert TrainingConfig().patience == 0
-    assert 365 * 4 - 60 == 1400
-    assert 366 * 4 - 120 == 1344
+    assert TrainingConfig().patience == 5
+    assert TrainingConfig().channel_weighting == "graphcast"
+    assert 365 * 4 - TrainingConfig().rollout_steps == 1459
+    assert 366 * 4 - TrainingConfig().rollout_steps == 1463
 
 
 def test_accumulation_counts_short_final_batch_by_sample() -> None:

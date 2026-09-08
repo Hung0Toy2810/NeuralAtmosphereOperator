@@ -80,7 +80,6 @@ class TrainingConfig:
     warmup_start_factor: float = 0.1
     gradient_clip: float = 1.0
     rollout_steps: int = 1
-    validation_rollout_steps: int = 60
     history: int = 0
     time_step: int = 1
     num_workers: int = 4
@@ -88,16 +87,11 @@ class TrainingConfig:
     # Training workers are recreated at epoch boundaries so checkpointed
     # sampler/worker RNG state produces the same next epoch after a restart.
     persistent_workers: bool = False
-    # Zero disables automatic early stopping for manually controlled runs.
-    patience: int = 0
+    # Bound spend once the stage-matched validation objective stops improving.
+    patience: int = 5
     early_stopping_min_delta: float = 0.0
-    terminal_loss_weight: float = 0.5
     rollout_discount: float = 1.0
-    spectral_loss_weight: float = 0.0
-    channel_relative_weight: float = 0.0
-    channel_weighting: str = "auto"
-    temp_diff_normalization: bool = True
-    use_loss_scaler: bool = False
+    channel_weighting: str = "graphcast"
     input_noise_std: float = 0.0
     gradient_checkpointing: bool = False
     seed: int = 42

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 PILOT_EMBED_DIM = 128
@@ -44,6 +45,10 @@ class AtmosphereModelConfig:
     grid_internal: str = "legendre-gauss"
     pos_embed: str = "none"
     use_residual_connection: bool = True
+    # Per-channel sigma(delta x) / sigma(x). The SFNO predicts a standardized
+    # tendency; the wrapper converts it to normalized-state units before the
+    # residual update. None keeps unit scaling for architecture-only tests.
+    tendency_scale: tuple[float, ...] | None = None
     initialization: str = "torch_harmonics_native"
 
     def __post_init__(self) -> None:
@@ -119,6 +124,13 @@ class AtmosphereModelConfig:
                 "Residual prediction requires in_channels to be a positive "
                 "multiple of out_channels (one or more stacked states)"
             )
+        if self.tendency_scale is not None:
+            if len(self.tendency_scale) != self.out_channels:
+                raise ValueError("tendency_scale must match out_channels")
+            if any(
+                not math.isfinite(value) or value <= 0 for value in self.tendency_scale
+            ):
+                raise ValueError("tendency_scale values must be finite and positive")
 
 
 def large_e384_l8_ablation_config() -> AtmosphereModelConfig:

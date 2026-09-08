@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import random
 from contextlib import nullcontext
@@ -213,6 +213,8 @@ def model_config_from_dict(values: dict[str, Any]) -> AtmosphereModelConfig:
     copied = dict(values)
     if "img_size" in copied:
         copied["img_size"] = tuple(copied["img_size"])
+    if copied.get("tendency_scale") is not None:
+        copied["tendency_scale"] = tuple(copied["tendency_scale"])
     return AtmosphereModelConfig(**copied)
 
 

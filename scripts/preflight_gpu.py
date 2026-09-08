@@ -1,44 +1,47 @@
-"""Measure real training updates and long validation on the target CUDA GPU."""
+"""Measure real training updates and target-horizon validation on a CUDA GPU."""
 
 from __future__ import annotations
 
 import argparse
-import time
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 import numpy as np
 import torch
+
 from configs.model_config import AtmosphereModelConfig
-from configs.pipeline_config import DataPaths
+from configs.pipeline_config import DataPaths, TrainingConfig
+from neural_atmosphere_operator.models.loss import (
+    StandardizedTendencyLoss,
+    graphcast_channel_weights,
+    standardized_tendency_scale,
+)
+from neural_atmosphere_operator.pipeline.contracts import (
+    enforce_forecast_contract,
+    forecast_contract,
+    validate_global_grid,
+    validate_statistics_bundle,
+)
+from neural_atmosphere_operator.pipeline.dependencies import validate_supported_runtime
+from neural_atmosphere_operator.pipeline.forecast import rollout_loss
 from neural_atmosphere_operator.pipeline.runtime import (
+    amp_context,
     build_loader,
     build_model,
     choose_device,
-    seed_everything,
-    amp_context,
-    move_batch,
     dataset_signature,
+    move_batch,
     save_json,
+    seed_everything,
 )
-from neural_atmosphere_operator.pipeline.contracts import (
-    validate_statistics_bundle,
-    validate_global_grid,
-    forecast_contract,
-    enforce_forecast_contract,
-)
-from neural_atmosphere_operator.pipeline.dependencies import validate_supported_runtime
-from neural_atmosphere_operator.models.loss import (
-    CombinedAtmosphereLoss,
-    makani_auto_channel_weights,
-)
-from neural_atmosphere_operator.pipeline.forecast import rollout_loss
 from scripts.train import validate
 
 
 def main():
+    training_defaults = TrainingConfig()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=DataPaths().root)
     parser.add_argument("--train-data", type=Path)
@@ -46,8 +49,9 @@ def main():
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--gradient-accumulation", type=int, default=8)
     parser.add_argument("--updates", type=int, default=3)
-    parser.add_argument("--rollout-steps", type=int, default=1)
-    parser.add_argument("--validation-rollout-steps", type=int, default=60)
+    parser.add_argument(
+        "--rollout-steps", type=int, default=training_defaults.rollout_steps
+    )
     parser.add_argument("--gradient-checkpointing", action="store_true")
     parser.add_argument(
         "--stabilize-sht-constants", action=argparse.BooleanOptionalAction, default=True
@@ -55,7 +59,7 @@ def main():
     parser.add_argument("--embed-dim", type=int, default=128)
     parser.add_argument("--num-layers", type=int, default=6)
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--output", type=Path, default=Path("runs/a100_preflight.json"))
+    parser.add_argument("--output", type=Path, default=Path("runs/gpu_preflight.json"))
     args = parser.parse_args()
     if (
         min(
@@ -63,7 +67,6 @@ def main():
             args.gradient_accumulation,
             args.updates,
             args.rollout_steps,
-            args.validation_rollout_steps,
         )
         < 1
     ):
@@ -93,11 +96,11 @@ def main():
     valid_loader, valid = build_loader(
         paths,
         "valid",
-        rollout_steps=args.validation_rollout_steps,
+        rollout_steps=args.rollout_steps,
         batch_size=1,
         data_path=args.valid_data,
         max_samples=1,
-        sample_selection="evenly_spaced",
+        sample_selection="first",
         lazy_targets=True,
         history=0,
         time_step=1,
@@ -121,20 +124,24 @@ def main():
             "data_signature": {"train": dataset_signature(train)},
         }
         enforce_forecast_contract(training, valid, 1, "valid")
+        tendency_scale = standardized_tendency_scale(
+            np.load(paths.stds), np.load(paths.time_diff_stds())
+        )
         config = AtmosphereModelConfig(
             img_size=train.spatial_shape,
             embed_dim=args.embed_dim,
             num_layers=args.num_layers,
             stabilize_sht_constants=args.stabilize_sht_constants,
+            tendency_scale=tuple(float(value) for value in tendency_scale.tolist()),
         )
         model = build_model(config, device)
         latitudes = torch.as_tensor(train.latitudes, device=device)
-        weights = makani_auto_channel_weights(
-            train.channel_names,
-            normalization_stds=torch.from_numpy(np.load(paths.stds)),
-            time_difference_stds=torch.from_numpy(np.load(paths.time_diff_stds())),
+        weights = graphcast_channel_weights(train.channel_names).to(device)
+        criterion = StandardizedTendencyLoss(
+            tendency_scale=tendency_scale,
+            channel_weights=weights,
+            latitudes=latitudes,
         ).to(device)
-        criterion = CombinedAtmosphereLoss(latitudes=latitudes, channel_weights=weights)
         optimizer = torch.optim.AdamW(
             model.parameters(), lr=5e-4, betas=(0.9, 0.95), weight_decay=1e-4
         )
@@ -209,10 +216,10 @@ def main():
             model,
             valid_loader,
             device,
-            args.validation_rollout_steps,
+            args.rollout_steps,
             amp,
             "bfloat16",
-            0.5,
+            1.0,
             latitudes,
             criterion,
         )
@@ -233,16 +240,19 @@ def main():
             "constant_probes": probes,
             "validation_lead_rmse": validation.lead_rmse,
             "validation_selection": validation.selection_score,
-            "peak_allocated_gib": torch.cuda.max_memory_allocated(device) / 2**30
-            if amp
-            else None,
-            "peak_reserved_gib": torch.cuda.max_memory_reserved(device) / 2**30
-            if amp
-            else None,
-            "gpu_total_gib": torch.cuda.get_device_properties(device).total_memory
-            / 2**30
-            if amp
-            else None,
+            "validation_mean_loss": validation.mean_loss,
+            "validation_final_loss": validation.final_loss,
+            "peak_allocated_gib": (
+                torch.cuda.max_memory_allocated(device) / 2**30 if amp else None
+            ),
+            "peak_reserved_gib": (
+                torch.cuda.max_memory_reserved(device) / 2**30 if amp else None
+            ),
+            "gpu_total_gib": (
+                torch.cuda.get_device_properties(device).total_memory / 2**30
+                if amp
+                else None
+            ),
         }
         save_json(args.output, report)
         print(f"Preflight passed; measurements: {args.output}")

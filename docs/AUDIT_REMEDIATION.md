@@ -1,4 +1,4 @@
-# Theo dõi xử lý audit trước A100
+# Theo dõi xử lý audit trước GPU training
 
 Báo cáo gốc trong `audit/2026-09-06/` mô tả commit trước sửa và được giữ nguyên.
 Bảng này theo dõi cả 22 mục theo mức độ. “Đã sửa” nghĩa là lỗi implementation
@@ -47,8 +47,8 @@ Regression nằm tại `test/test_audit_regressions.py`, ngoài suite gốc. Bao
 - Unsupported configurations, relative loss zero subgradient và CPU execution của preflight.
 
 Các kết quả local mới được lưu dưới `audit/remediation/`. CUDA không có trong
-workspace này. Không chạy full corpus hoặc A100 training; không báo VRAM ước tính
-như VRAM đã đo. [Runbook A100](A100_TRAINING.md) nêu lệnh cần chạy trên GPU trước
+workspace này. Không chạy full corpus hoặc long GPU training; không báo VRAM ước tính
+như VRAM đã đo. [Runbook GPU](GPU_TRAINING.md) nêu lệnh cần chạy trên GPU trước
 khi dùng baseline dài hạn.
 
 Không đổi dataset channels, loss priorities hoặc số SFNO parameters. Numerical SHT path
@@ -62,9 +62,9 @@ như kết quả nghiên cứu hợp lệ sau khi chỉ sửa code.
 - **67 tests pass**; Pyright/Pylance kiểm 42 file với **0 errors, 0 warnings**;
   Ruff F checks và `git diff --check` pass.
 - MPS forward/backward pass; chỉ có cảnh báo padding performance của dependency.
-- Full E128/L6, 361×720 CPU: constant spatial std **2.2109 → 0**; zero input vẫn zero. Near-constant perturbation 1e−5 vẫn cho output spatial std khoảng **2.3198**; đây là giới hạn cần đo trên dữ liệu thật/A100, chưa gọi là đã stable.
+- Full E128/L6, 361×720 CPU: constant spatial std **2.2109 → 0**; zero input vẫn zero. Near-constant perturbation 1e−5 vẫn cho output spatial std khoảng **2.3198**; đây là giới hạn cần đo trên dữ liệu thật/GPU đích, chưa gọi là đã stable.
 - Pilot ERA5 thật dùng E8/L2, full grid, train 00→06 UTC và validation 12→18 UTC cùng 2018-01-01. Statistics chỉ từ hai training states. Sau **12 updates**, train loss **16.7129 → 11.6838**, validation loss **16.9253 → 12.0285**, không non-finite gradients. Hai periods cùng ngày tương quan mạnh: không phải forecast-skill evidence.
-- Chưa tải corpus 1995–2020; chưa có measurements A100 hoặc long-run checkpoint E128. Không tự khởi chạy long training.
+- Chưa tải corpus 1995–2020; chưa có measurements trên GPU đích hoặc long-run checkpoint E128. Không tự khởi chạy long training.
 
 Bằng chứng: [pytest](../audit/remediation/pytest.txt),
 [MPS](../audit/remediation/backend_mps.txt),

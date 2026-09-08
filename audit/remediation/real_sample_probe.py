@@ -79,7 +79,7 @@ run(
         "1",
         "--num-workers",
         "0",
-        "--validation-rollout-steps",
+        "--rollout-steps",
         "1",
         "--max-validation-samples",
         "1",

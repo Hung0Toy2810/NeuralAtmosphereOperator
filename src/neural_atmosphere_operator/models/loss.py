@@ -6,10 +6,10 @@ Area weighting is derived from spherical latitude-cell boundaries.
 
 from __future__ import annotations
 
-from collections import OrderedDict
 import weakref
-
-from typing import Literal, Sequence, cast
+from collections import OrderedDict
+from collections.abc import Sequence
+from typing import Literal, cast
 
 import torch
 from torch import Tensor, nn
@@ -39,6 +39,80 @@ _MAKANI_PRESSURE_VARIABLES = {
     "u_component_of_wind",
     "v_component_of_wind",
 }
+
+_GRAPHCAST_SURFACE_CHANNEL_WEIGHTS = {
+    "10m_u_component_of_wind": 0.1,
+    "10m_v_component_of_wind": 0.1,
+    "2m_temperature": 1.0,
+    "surface_pressure": 0.1,
+    "mean_sea_level_pressure": 0.1,
+    "total_column_water_vapour": 0.1,
+}
+
+
+def standardized_tendency_scale(
+    normalization_stds: Tensor | Sequence[float],
+    time_difference_stds: Tensor | Sequence[float],
+) -> Tensor:
+    """Return ``sigma(delta x) / sigma(x)`` for residual state updates."""
+    global_stds = torch.as_tensor(normalization_stds, dtype=torch.float32).flatten()
+    delta_stds = torch.as_tensor(time_difference_stds, dtype=torch.float32).flatten()
+    if global_stds.shape != delta_stds.shape or global_stds.numel() == 0:
+        raise ValueError("State and time-difference statistics must share a shape")
+    if (
+        not torch.isfinite(global_stds).all()
+        or not torch.isfinite(delta_stds).all()
+        or (global_stds <= 0).any()
+        or (delta_stds <= 0).any()
+    ):
+        raise ValueError(
+            "State and time-difference statistics must be finite and positive"
+        )
+    return delta_stds / global_stds
+
+
+def graphcast_channel_weights(channel_names: Sequence[str]) -> Tensor:
+    """Return variable- and pressure-balanced weights for this channel subset.
+
+    Each pressure-level variable receives total weight one, distributed across
+    its selected levels in proportion to pressure. Surface weights shared with
+    GraphCast use its deterministic objective; the additional ``sp`` and
+    ``tcwv`` channels use NVIDIA Makani's documented SFNO weights. The final
+    vector is normalized to sum to one, which preserves the gradient direction
+    while keeping a stable loss scale for the compact channel subset.
+    """
+    if not channel_names:
+        raise ValueError("channel_names cannot be empty")
+
+    pressure_groups: dict[str, list[tuple[int, float]]] = {}
+    weights = torch.zeros(len(channel_names), dtype=torch.float32)
+    for index, name in enumerate(channel_names):
+        surface_weight = _GRAPHCAST_SURFACE_CHANNEL_WEIGHTS.get(name)
+        if surface_weight is not None:
+            weights[index] = surface_weight
+            continue
+        if "@" not in name:
+            raise ValueError(f"No deterministic loss weight is defined for {name!r}")
+        variable, level_label = name.rsplit("@", 1)
+        if variable not in _MAKANI_PRESSURE_VARIABLES or not level_label.endswith(
+            "hPa"
+        ):
+            raise ValueError(f"Invalid pressure-level channel {name!r}")
+        try:
+            pressure = float(level_label[:-3])
+        except ValueError as error:
+            raise ValueError(f"Invalid pressure-level channel {name!r}") from error
+        if pressure <= 0:
+            raise ValueError(f"Pressure level must be positive in {name!r}")
+        pressure_groups.setdefault(variable, []).append((index, pressure))
+
+    for channels in pressure_groups.values():
+        pressure_sum = sum(pressure for _, pressure in channels)
+        for index, pressure in channels:
+            weights[index] = pressure / pressure_sum
+    if (weights <= 0).any():
+        raise ValueError("Every channel must receive a positive loss weight")
+    return weights / weights.sum()
 
 
 def makani_auto_channel_weights(
@@ -378,6 +452,57 @@ class LossScaler(nn.Module):
 
     def forward(self, values: Tensor) -> Tensor:
         return _ChannelGradientScaleFunction.apply(values, self.eps)
+
+
+class StandardizedTendencyLoss(nn.Module):
+    """Area-weighted state-error MSE in time-difference-scaled coordinates.
+
+    Model predictions and targets are normalized atmospheric states. Dividing
+    their error by ``sigma(delta x) / sigma(x)`` weights physical squared
+    errors by the inverse one-step time-difference variance. For a one-step
+    forecast initialized from truth, this is exactly the MSE of the predicted
+    standardized tendency. At later autoregressive leads it remains the
+    GraphCast-style forecast-state error in the same standardized units.
+    """
+
+    def __init__(
+        self,
+        tendency_scale: Tensor | Sequence[float],
+        channel_weights: Tensor | Sequence[float],
+        latitudes: Tensor | Sequence[float] | None = None,
+    ) -> None:
+        super().__init__()
+        scale = torch.as_tensor(tendency_scale, dtype=torch.float32).flatten()
+        weights = torch.as_tensor(channel_weights, dtype=torch.float32).flatten()
+        if scale.numel() == 0 or scale.shape != weights.shape:
+            raise ValueError("tendency_scale and channel_weights must share a shape")
+        if (
+            not torch.isfinite(scale).all()
+            or not torch.isfinite(weights).all()
+            or (scale <= 0).any()
+            or (weights < 0).any()
+            or weights.sum() <= 0
+        ):
+            raise ValueError("Loss scales and weights must be finite and valid")
+        self.register_buffer("tendency_scale", scale.view(1, -1, 1, 1))
+        self.register_buffer("channel_weights", weights)
+        self.latitudes = latitudes
+
+    def per_channel(self, prediction: Tensor, target: Tensor) -> Tensor:
+        """Return the batch-mean objective contribution before channel weights."""
+        if prediction.shape != target.shape or prediction.ndim != 4:
+            raise ValueError("prediction and target must share shape [B, C, H, W]")
+        scale = cast(Tensor, self.tendency_scale).to(prediction)
+        if scale.shape[1] != prediction.shape[1]:
+            raise ValueError("tendency_scale must align with prediction channels")
+        area = _normalized_latitude_weights(prediction, self.latitudes, 1e-8)
+        standardized_error = (prediction - target) / scale
+        return (standardized_error.square() * area).mean(dim=(0, 2, 3))
+
+    def forward(self, prediction: Tensor, target: Tensor) -> Tensor:
+        per_channel = self.per_channel(prediction, target)
+        weights = cast(Tensor, self.channel_weights).to(prediction)
+        return torch.sum(per_channel * weights)
 
 
 class CombinedAtmosphereLoss(nn.Module):

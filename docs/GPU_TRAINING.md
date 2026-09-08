@@ -1,11 +1,11 @@
-# Chuẩn bị training trên NVIDIA A100
+# Chuẩn bị training trên GPU CUDA
 
 Bản sửa giữ SFNO-SC2-L6-E128, 26 channels, 361×720 và bước dự báo 6 giờ.
 Cấu hình khởi đầu dưới đây dành cho **một GPU**, batch 1 × accumulation 8.
 Đây là lựa chọn thận trọng để đo trước; chưa phải cam kết về VRAM hoặc throughput.
-A100 có các bản 40GB/80GB và hỗ trợ BF16 theo [datasheet NVIDIA](https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/a100-80gb-datasheet-update-a4-nvidia-1485612-r12-web.pdf).
+GPU cụ thể được chọn sau khi đo VRAM và throughput bằng preflight; cấu hình không gắn với một model GPU.
 
-## 1. Environment riêng trên máy A100
+## 1. Environment riêng trên máy GPU
 
 Dùng Python 3.11 và môi trường sạch, không kế thừa torchvision/OpenCV từ môi trường khác.
 Cài đúng `requirements-lock.txt`. Chọn CUDA wheel tương thích driver theo
@@ -65,16 +65,16 @@ Statistics cũ hoặc checkpoint chưa có forecast contract phải được tá
 không có migration tự đoán metadata. Đổi statistics/architecture là một experiment
 mới, không phải exact resume.
 
-## 3. Preflight thực trên A100
+## 3. Preflight thực trên GPU
 
 ```bash
-OMP_NUM_THREADS=1 python scripts/preflight_a100.py \
+OMP_NUM_THREADS=1 python scripts/preflight_gpu.py \
   --device cuda --batch-size 1 --gradient-accumulation 8 \
-  --updates 3 --rollout-steps 1 --validation-rollout-steps 60 \
-  --output runs/a100_preflight_b1.json
+  --updates 3 --rollout-steps 1 \
+  --output runs/gpu_preflight_k1_b1.json
 ```
 
-Lệnh dùng dữ liệu thật, cùng Makani channel weighting, delta normalization,
+Lệnh dùng dữ liệu thật, GraphCast-style channel weighting và standardized-tendency loss,
 BF16 autocast, clipping 1.0 và AdamW như train. Nó đo peak allocated/reserved VRAM
 của cả updates và validation, output difference FP32/BF16, gradient norms,
 zero/constant probes và RMSE từng lead. Không lưu weights này thành research checkpoint.
@@ -101,7 +101,7 @@ không coi bản sửa SHT là bằng chứng toàn dynamics đã stable. Norm/e
 vẫn cần ablation riêng.
 
 Sau khi B1 pass, có thể đo B2×4 hoặc B4×2 vào **report khác**. Chọn batch từ phép đo,
-không tự suy A100 80GB phải dùng model lớn hơn. Preflight `--device cpu` dành cho
+không tự suy một GPU nhiều VRAM phải dùng model lớn hơn. Preflight `--device cpu` dành cho
 integration tests nhỏ, không mô phỏng VRAM CUDA. Với K2 cần preflight riêng có
 `--rollout-steps 2 --gradient-checkpointing`.
 
@@ -110,21 +110,53 @@ integration tests nhỏ, không mô phỏng VRAM CUDA. Với K2 cần preflight 
 ```bash
 OMP_NUM_THREADS=1 python scripts/train.py \
   --device cuda --amp-dtype bfloat16 \
-  --run-dir runs/a100_sfno_k1 --stage-name sfno_1step \
+  --run-dir runs/sfno_k1 --stage-name sfno_1step \
   --epochs 25 --scheduler-epochs 25 --warmup-epochs 3 \
   --batch-size 1 --gradient-accumulation 8 \
-  --rollout-steps 1 --validation-rollout-steps 60 \
-  --validation-batch-size 1 --max-validation-samples 32 \
+  --rollout-steps 1 --patience 5 \
+  --validation-batch-size 1 \
   --validation-num-workers 0 \
   --num-workers 4 --prefetch-factor 2 --no-persistent-workers \
   --no-gradient-checkpointing
+
+# K=2: fine-tune từ best K=1, LR thấp hơn
+OMP_NUM_THREADS=1 python scripts/train.py \
+  --device cuda --amp-dtype bfloat16 \
+  --run-dir runs/sfno_k2 --stage-name sfno_2step \
+  --init-checkpoint runs/sfno_k1/checkpoints/best.pt \
+  --epochs 10 --scheduler-epochs 10 --warmup-epochs 1 \
+  --learning-rate 1e-4 --rollout-steps 2 \
+  --batch-size 1 --gradient-accumulation 8 --gradient-checkpointing \
+  --validation-batch-size 1 --validation-num-workers 0 \
+  --num-workers 4 --prefetch-factor 2 --no-persistent-workers
+
+# K=4: tiếp tục fine-tune
+OMP_NUM_THREADS=1 python scripts/train.py \
+  --device cuda --amp-dtype bfloat16 \
+  --run-dir runs/sfno_k4 --stage-name sfno_4step \
+  --init-checkpoint runs/sfno_k2/checkpoints/best.pt \
+  --epochs 7 --scheduler-epochs 7 --warmup-epochs 0 \
+  --learning-rate 5e-5 --rollout-steps 4 \
+  --batch-size 1 --gradient-accumulation 8 --gradient-checkpointing \
+  --validation-batch-size 1 --validation-num-workers 0 \
+  --num-workers 4 --prefetch-factor 2 --no-persistent-workers
+
+# K=8: fine-tune cuối cho cửa sổ 48 giờ
+OMP_NUM_THREADS=1 python scripts/train.py \
+  --device cuda --amp-dtype bfloat16 \
+  --run-dir runs/sfno_k8 --stage-name sfno_8step \
+  --init-checkpoint runs/sfno_k4/checkpoints/best.pt \
+  --epochs 5 --scheduler-epochs 5 --warmup-epochs 0 \
+  --learning-rate 2.5e-5 --rollout-steps 8 \
+  --batch-size 1 --gradient-accumulation 8 --gradient-checkpointing \
+  --validation-batch-size 1 --validation-num-workers 0 \
+  --num-workers 4 --prefetch-factor 2 --no-persistent-workers
 ```
 
-32 initialization được chọn đều trên **toàn validation year**, không lấy 32 sample
-đầu năm. Đây là screening panel; giữ nguyên giữa các candidate. Validation/evaluation
-chỉ đọc một target lead tại một thời điểm: CPU/GPU truth buffers không tăng tuyến tính
-với K. I/O hiện đọc tuần tự ở main process; profile trước khi thêm asynchronous prefetch.
-Training BPTT vẫn tăng chi phí theo K, không bị detach để tiết kiệm bộ nhớ.
+Mặc định validation quét tuần tự mọi sliding window hợp lệ. Ở stage K=1, train và validation đều tính đúng một lead; các stage K=2, K=4 và K=8 cũng tuân theo cùng quy tắc. Checkpoint được chọn bằng đúng objective của stage hiện tại. Validation/evaluation chỉ đọc một target lead tại một thời điểm:
+CPU/GPU truth buffers không tăng tuyến tính với K. I/O hiện đọc tuần tự ở main process;
+profile trước khi thêm asynchronous prefetch. Training BPTT vẫn tăng chi phí theo K,
+không bị detach để tiết kiệm bộ nhớ.
 
 Trước baseline 25 epochs, nên chạy pilot cùng cấu hình trên ít training samples
 vào run directory riêng để xem actual loss/gradient scales. Pilot không phải held-out
@@ -140,18 +172,26 @@ checkpoint có non-finite parameters hoặc Adam state bị từ chối. Khôi p
 last-good checkpoint sau khi tìm nguyên nhân. **Không tắt finite guards.**
 
 Exact resume: lặp lại nguyên lệnh và thêm
-`--resume runs/a100_sfno_k1/checkpoints/last.pt`. Không đổi batch, sample panel,
+`--resume runs/sfno_k1/checkpoints/last.pt`. Không đổi batch, sample panel,
 warmup, dữ liệu, runtime hoặc scheduler. Ledger phía sau checkpoint cũ được archive
 trước khi dựng lại history để tránh trộn trajectories.
+
+Train objective tại stage K là:
+
+`L_K = sum(k=1..K, gamma^(k-1) L_k) / sum(k=1..K, gamma^(k-1))`,
+
+với mặc định `gamma=1`. Mỗi `L_k` là MSE của sai số trạng thái tại lead `k`,
+chuẩn hóa bằng `time_diff_std`, có spherical area weights và variable/pressure
+weights. Tại `K=1`, nó đúng bằng MSE của standardized tendency dự báo một bước.
+Validation và test dùng nguyên `L_K`, cùng K và gamma của checkpoint.
 
 ## 5. Evaluation và các việc nghiên cứu còn mở
 
 ```bash
 OMP_NUM_THREADS=1 python scripts/evaluate.py \
-  --checkpoint runs/a100_sfno_k1/checkpoints/best.pt \
-  --device cuda --split test --rollout-steps 60 \
-  --max-samples 64 --sample-selection evenly_spaced \
-  --num-workers 0 --output-dir runs/a100_sfno_k1/test_15d_panel64
+  --checkpoint runs/sfno_k8/checkpoints/best.pt \
+  --device cuda --split test --num-workers 0 \
+  --output-dir runs/sfno_k8/test_sliding_windows
 ```
 
 Evaluation khóa cadence/grid/units, từ chối overlap train/validation của checkpoint,
@@ -160,8 +200,8 @@ So RMSE với persistence và training climatology trên cùng starts; xem physi
 variance ratio, ACC valid counts từng channel. ACC của climatology là undefined vì
 forecast anomaly bằng zero, không phải bug.
 
-64 starts vẫn là panel với phụ thuộc theo thời gian; final research cần broader
-coverage, block-bootstrap uncertainty, seasonal baseline, region/extreme/spherical
+Các sliding windows chồng lấn nên không độc lập thống kê; final research cần
+block-bootstrap uncertainty, seasonal baseline, region/extreme/spherical
 spectra diagnostics và nhiều seed. Không tinh chỉnh hyperparameters theo test year.
 Không dùng RMSE thấp làm bằng chứng mass/energy conservation. Không thêm conservation
 penalty khi thiếu đúng flux/forcing/vertical variables của budget.

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
@@ -18,7 +18,7 @@ from torch.amp.grad_scaler import GradScaler
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
-from configs.download_data_config import channel_names, WeatherBenchDownloadConfig
+from configs.download_data_config import WeatherBenchDownloadConfig, channel_names
 from configs.model_config import AtmosphereModelConfig
 from neural_atmosphere_operator.data.loader import (
     AtmosphereDatasetConfig,
@@ -115,7 +115,7 @@ def experiment(tmp_path_factory):
         "4",
         "--gradient-accumulation",
         "2",
-        "--validation-rollout-steps",
+        "--rollout-steps",
         "2",
         "--num-workers",
         "0",
@@ -174,6 +174,22 @@ def test_exact_resume_and_changed_arguments(experiment):
         assert "Resume must preserve" in output
 
 
+def test_validation_artifact_records_every_target_lead(experiment):
+    work, _, _, _ = experiment
+    config = json.loads((work / "full/config.json").read_text())
+    report = json.loads((work / "full/validation/epoch_0001.json").read_text())
+    assert config["training"]["rollout_steps"] == 2
+    assert config["training"]["validation_rollout_steps"] == 2
+    assert config["valid_samples"] == 22
+    assert report["selection_horizon_hours"] == 12
+    assert report["selection_objective"] == {
+        "name": "standardized_tendency_mse",
+        "rollout_discount": 1.0,
+    }
+    assert report["selection_score"] == pytest.approx(report["mean_loss"])
+    assert [item["lead_hours"] for item in report["lead_metrics"]] == [6, 12]
+
+
 def evaluation_args(work, stats):
     return [
         "scripts/evaluate.py",
@@ -209,6 +225,11 @@ def test_valid_evaluation_baselines_and_forecast_beyond_observations(experiment)
     assert report["checkpoint_sha256"] and len(report["initializations"]) == 1
     assert set(report["baselines"]) == {"persistence", "training_climatology"}
     assert report["metrics"][0]["lead_hours"] == 6
+    assert report["rollout_steps"] == 2
+    assert report["objective"]["name"] == "standardized_tendency_mse"
+    assert report["objective"]["loss"] == pytest.approx(
+        sum(report["objective"]["loss_by_lead"]) / 2
+    )
     cli(
         [
             "scripts/rollout.py",
@@ -376,7 +397,7 @@ def test_preflight_runs_actual_updates_and_validation(experiment):
     work, _, _, _ = experiment
     cli(
         [
-            "scripts/preflight_a100.py",
+            "scripts/preflight_gpu.py",
             "--data-dir",
             str(work),
             "--train-data",
@@ -395,7 +416,7 @@ def test_preflight_runs_actual_updates_and_validation(experiment):
             "2",
             "--updates",
             "2",
-            "--validation-rollout-steps",
+            "--rollout-steps",
             "2",
             "--output",
             str(work / "preflight.json"),
@@ -444,8 +465,9 @@ def test_nonfinite_checkpoint_preserves_last_good(tmp_path, monkeypatch):
 
 
 def test_lazy_truth_matches_eager_and_does_not_materialize_horizon(tmp_path):
-    from neural_atmosphere_operator.pipeline.forecast import lazy_target_provider
     from torch.utils.data import DataLoader
+
+    from neural_atmosphere_operator.pipeline.forecast import lazy_target_provider
 
     make_store(tmp_path / "data.zarr", 2020)
     config = AtmosphereDatasetConfig(
@@ -481,6 +503,7 @@ def test_nonfinite_gradient_never_updates_optimizer(experiment):
 
 def test_payload_edit_changes_resume_identity(tmp_path):
     import zarr
+
     from neural_atmosphere_operator.pipeline.runtime import dataset_signature
 
     make_store(tmp_path / "data.zarr", 2020)
@@ -497,6 +520,7 @@ def test_payload_edit_changes_resume_identity(tmp_path):
 
 def test_full_scan_verifies_payload_and_rejects_mutation(experiment):
     import zarr
+
     from configs.pipeline_config import DataPaths
 
     work, _, _, _ = experiment
@@ -546,6 +570,7 @@ def test_fp16_complex_training_profile_fails_fast():
 
 def test_constant_preserving_sht_formula_and_gradient():
     from torch_harmonics import RealSHT
+
     from neural_atmosphere_operator.models.transforms import ConstantPreservingRealSHT
 
     native = RealSHT(13, 24, lmax=4, mmax=4).double()

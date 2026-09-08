@@ -9,9 +9,10 @@ import math
 import shutil
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, cast
+from typing import cast
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(PROJECT_ROOT), str(PROJECT_ROOT / "src")]
@@ -25,16 +26,21 @@ from torch.optim import AdamW
 from configs.model_config import AtmosphereModelConfig
 from configs.pipeline_config import DataPaths, TrainingConfig
 from neural_atmosphere_operator.models.loss import (
-    ChannelRelativeAtmosphereLoss,
-    CombinedAtmosphereLoss,
+    StandardizedTendencyLoss,
+    graphcast_channel_weights,
     latitude_weighted_mse,
-    makani_auto_channel_weights,
+    standardized_tendency_scale,
 )
 from neural_atmosphere_operator.models.model import AtmosphereNeuralOperator
 from neural_atmosphere_operator.pipeline.checkpoint import (
     load_checkpoint,
     restore_training_state,
     save_checkpoint,
+)
+from neural_atmosphere_operator.pipeline.contracts import (
+    forecast_contract,
+    validate_global_grid,
+    validate_statistics_bundle,
 )
 from neural_atmosphere_operator.pipeline.dependencies import (
     enforce_checkpoint_runtime,
@@ -59,11 +65,6 @@ from neural_atmosphere_operator.pipeline.runtime import (
     save_json,
     seed_everything,
     statistics_signature,
-)
-from neural_atmosphere_operator.pipeline.contracts import (
-    forecast_contract,
-    validate_global_grid,
-    validate_statistics_bundle,
 )
 from neural_atmosphere_operator.pipeline.schedule import (
     create_warmup_cosine_scheduler,
@@ -112,7 +113,7 @@ def parse_args() -> argparse.Namespace:
         "--validation-batch-size",
         type=int,
         default=defaults.validation_batch_size,
-        help="Smaller batch for long validation rollouts to bound target memory",
+        help="Independent batch size for target-horizon validation rollouts",
     )
     parser.add_argument(
         "--gradient-accumulation",
@@ -130,15 +131,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--gradient-clip", type=float, default=defaults.gradient_clip)
     parser.add_argument("--rollout-steps", type=int, default=defaults.rollout_steps)
-    parser.add_argument(
-        "--validation-rollout-steps",
-        type=int,
-        default=defaults.validation_rollout_steps,
-        help=(
-            "Autoregressive horizon used for checkpoint selection, independent "
-            "of the shorter training curriculum horizon"
-        ),
-    )
     parser.add_argument(
         "--rollout-discount", type=float, default=defaults.rollout_discount
     )
@@ -160,11 +152,6 @@ def parse_args() -> argparse.Namespace:
         "--early-stopping-min-delta",
         type=float,
         default=defaults.early_stopping_min_delta,
-    )
-    parser.add_argument(
-        "--terminal-loss-weight",
-        type=float,
-        default=defaults.terminal_loss_weight,
     )
     parser.add_argument("--seed", type=int, default=defaults.seed)
     parser.add_argument("--device", default="auto")
@@ -207,8 +194,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-validation-samples",
         type=int,
-        default=32,
-        help="Evenly spaced initialization panel; fixed across model candidates",
+        help=(
+            "Optional limit on consecutive validation windows; by default all "
+            "sliding windows are evaluated"
+        ),
     )
     parser.add_argument(
         "--validation-num-workers",
@@ -225,32 +214,10 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--spectral-loss-weight",
-        type=float,
-        default=defaults.spectral_loss_weight,
-    )
-    parser.add_argument(
-        "--channel-relative-weight",
-        type=float,
-        default=defaults.channel_relative_weight,
-    )
-    parser.add_argument(
         "--channel-weighting",
-        choices=("auto", "constant"),
+        choices=("graphcast", "constant"),
         default=defaults.channel_weighting,
-        help="Makani auto pressure-level weights or equal channel weights",
-    )
-    parser.add_argument(
-        "--temp-diff-normalization",
-        action=argparse.BooleanOptionalAction,
-        default=defaults.temp_diff_normalization,
-        help="Scale loss channels by global_std/time_diff_std as in Makani",
-    )
-    parser.add_argument(
-        "--use-loss-scaler",
-        action="store_true",
-        default=defaults.use_loss_scaler,
-        help="Experimental per-channel backward gradient re-balancing",
+        help="GraphCast variable/pressure weights or equal channel weights",
     )
     return parser.parse_args()
 
@@ -272,7 +239,7 @@ def validate(
     steps: int,
     amp: bool,
     amp_dtype: str,
-    terminal_loss_weight: float,
+    discount_factor: float,
     latitudes: Tensor,
     loss_fn: Callable[[Tensor, Tensor], Tensor],
 ) -> ValidationSummary:
@@ -311,13 +278,13 @@ def validate(
         raise FloatingPointError("Validation metric reductions overflowed")
     step_losses = tuple((step_loss_sums / denominator).cpu().tolist())
     lead_rmse = tuple((step_mse_sums / denominator).sqrt().cpu().tolist())
-    mean_loss = sum(step_losses) / len(step_losses)
+    lead_weights = tuple(discount_factor**lead for lead in range(steps))
+    mean_loss = sum(
+        weight * loss for weight, loss in zip(lead_weights, step_losses)
+    ) / sum(lead_weights)
     final_loss = step_losses[-1]
-    selection = (
-        1.0 - terminal_loss_weight
-    ) * mean_loss + terminal_loss_weight * final_loss
     return ValidationSummary(
-        selection_score=selection,
+        selection_score=mean_loss,
         mean_loss=mean_loss,
         final_loss=final_loss,
         lead_losses=step_losses,
@@ -350,7 +317,6 @@ def _validate_cli(args: argparse.Namespace) -> None:
         args.validation_batch_size,
         args.gradient_accumulation,
         args.rollout_steps,
-        args.validation_rollout_steps,
         args.time_step,
     )
     if min(positive) < 1 or args.history < 0:
@@ -371,10 +337,6 @@ def _validate_cli(args: argparse.Namespace) -> None:
         raise ValueError("gradient clip must be positive")
     if not 0 < args.rollout_discount <= 1:
         raise ValueError("rollout discount must be in (0, 1]")
-    if not 0 <= args.terminal_loss_weight <= 1:
-        raise ValueError("terminal loss weight must be in [0, 1]")
-    if min(args.spectral_loss_weight, args.channel_relative_weight) < 0:
-        raise ValueError("auxiliary loss weights cannot be negative")
     if args.input_noise_std < 0:
         raise ValueError("input noise standard deviation cannot be negative")
     if args.num_workers < 0 or args.prefetch_factor < 1:
@@ -440,13 +402,13 @@ def main() -> None:
     valid_loader, valid_dataset = build_loader(
         paths,
         "valid",
-        rollout_steps=args.validation_rollout_steps,
+        rollout_steps=args.rollout_steps,
         batch_size=args.validation_batch_size,
         data_path=args.valid_data,
         **{
             **common_loader,
             "max_samples": args.max_validation_samples,
-            "sample_selection": "evenly_spaced",
+            "sample_selection": "first",
             "num_workers": args.validation_num_workers,
             "prefetch_factor": 1,
             "lazy_targets": True,
@@ -463,9 +425,8 @@ def main() -> None:
         "means": means_path,
         "stds": stds_path,
         "climatology": climatology_path,
+        "time_diff_stds": time_diff_stds_path,
     }
-    if args.temp_diff_normalization:
-        statistic_paths["time_diff_stds"] = time_diff_stds_path
     validate_statistics_bundle(train_dataset, statistic_paths, args.time_step)
     if train_dataset.spatial_shape != valid_dataset.spatial_shape:
         raise ValueError("Train and validation grids must match")
@@ -493,6 +454,15 @@ def main() -> None:
     validate_global_grid(valid_dataset)
 
     channels = train_dataset.config.channel_count
+    global_stds = np.load(stds_path)
+    if not time_diff_stds_path.expanduser().resolve().is_file():
+        raise FileNotFoundError(
+            "Missing time-difference statistics: "
+            f"{time_diff_stds_path}. Run scripts/compute_stats.py "
+            f"--time-step {args.time_step} on the training split."
+        )
+    delta_stds = np.load(time_diff_stds_path)
+    tendency_scale = standardized_tendency_scale(global_stds, delta_stds)
     model_config = AtmosphereModelConfig(
         img_size=train_dataset.spatial_shape,
         in_channels=channels * (args.history + 1),
@@ -505,57 +475,19 @@ def main() -> None:
         hard_thresholding_fraction=args.hard_thresholding_fraction,
         pos_embed=args.pos_embed,
         stabilize_sht_constants=args.stabilize_sht_constants,
+        tendency_scale=tuple(float(value) for value in tendency_scale.tolist()),
     )
     latitudes = torch.as_tensor(train_dataset.latitudes, device=device)
-    global_stds = np.load(stds_path)
-    delta_stds = None
-    if args.temp_diff_normalization:
-        if not time_diff_stds_path.expanduser().resolve().is_file():
-            raise FileNotFoundError(
-                "Missing time-difference statistics: "
-                f"{time_diff_stds_path}. Run scripts/compute_stats.py "
-                f"--time-step {args.time_step} on the training split."
-            )
-        delta_stds = np.load(time_diff_stds_path)
-    if args.channel_weighting == "auto":
-        channel_weights = makani_auto_channel_weights(
-            train_dataset.channel_names,
-            normalization_stds=global_stds if delta_stds is not None else None,
-            time_difference_stds=delta_stds,
-        )
+    if args.channel_weighting == "graphcast":
+        channel_weights = graphcast_channel_weights(train_dataset.channel_names)
     else:
         channel_weights = torch.full((channels,), 1.0 / channels)
-        if delta_stds is not None:
-            global_stds_tensor = torch.as_tensor(global_stds).flatten()
-            delta_stds_tensor = torch.as_tensor(delta_stds).flatten()
-            if (
-                global_stds_tensor.numel() != channels
-                or delta_stds_tensor.numel() != channels
-            ):
-                raise ValueError("Loss statistics must match the output channel count")
-            if (
-                not torch.isfinite(global_stds_tensor).all()
-                or not torch.isfinite(delta_stds_tensor).all()
-                or (global_stds_tensor <= 0).any()
-                or (delta_stds_tensor <= 0).any()
-            ):
-                raise ValueError("Loss standard deviations must be finite and positive")
-            channel_weights *= global_stds_tensor / delta_stds_tensor.clamp_min(1e-6)
     channel_weights = channel_weights.to(device=device)
-    spatial_loss = CombinedAtmosphereLoss(
-        spectral_weight=args.spectral_loss_weight,
+    training_loss = StandardizedTendencyLoss(
+        tendency_scale=tendency_scale,
         latitudes=latitudes,
         channel_weights=channel_weights,
-        use_loss_scaler=args.use_loss_scaler,
     )
-    relative_loss = ChannelRelativeAtmosphereLoss(latitudes=latitudes)
-
-    def training_loss(prediction: Tensor, target: Tensor) -> Tensor:
-        total = spatial_loss(prediction, target)
-        if args.channel_relative_weight:
-            relative, _ = relative_loss(prediction, target)
-            total = total + args.channel_relative_weight * relative
-        return total
 
     checkpoint = None
     checkpoint_source = args.resume or args.init_checkpoint
@@ -625,7 +557,7 @@ def main() -> None:
         "total_updates": total_updates,
         "gradient_clip": args.gradient_clip,
         "rollout_steps": args.rollout_steps,
-        "validation_rollout_steps": args.validation_rollout_steps,
+        "validation_rollout_steps": args.rollout_steps,
         "rollout_discount": args.rollout_discount,
         "history": args.history,
         "time_step": args.time_step,
@@ -640,12 +572,8 @@ def main() -> None:
         "allow_overlapping_splits": args.allow_overlapping_splits,
         "patience": args.patience,
         "early_stopping_min_delta": args.early_stopping_min_delta,
-        "terminal_loss_weight": args.terminal_loss_weight,
-        "spectral_loss_weight": args.spectral_loss_weight,
-        "channel_relative_weight": args.channel_relative_weight,
+        "loss_name": "standardized_tendency_mse",
         "channel_weighting": args.channel_weighting,
-        "temp_diff_normalization": args.temp_diff_normalization,
-        "use_loss_scaler": args.use_loss_scaler,
         "input_noise_std": args.input_noise_std,
         "runtime": runtime,
         "data_signature": {
@@ -654,11 +582,7 @@ def main() -> None:
             "means": statistics_signature(means_path),
             "stds": statistics_signature(stds_path),
             "climatology": statistics_signature(climatology_path),
-            "time_diff_stds": (
-                statistics_signature(time_diff_stds_path)
-                if args.temp_diff_normalization
-                else None
-            ),
+            "time_diff_stds": statistics_signature(time_diff_stds_path),
         },
     }
 
@@ -756,7 +680,7 @@ def main() -> None:
         args.batch_size * args.gradient_accumulation,
         args.validation_batch_size,
         args.rollout_steps,
-        args.validation_rollout_steps,
+        args.rollout_steps,
         args.history,
     )
     logger.info(
@@ -767,11 +691,9 @@ def main() -> None:
         bool(train_loader.pin_memory),
     )
     logger.info(
-        "loss channel_weighting=%s temp_diff_normalization=%s "
-        "loss_scaler=%s input_noise_std=%.4g range=[%.4g, %.4g]",
+        "loss=standardized_tendency_mse channel_weighting=%s "
+        "input_noise_std=%.4g range=[%.4g, %.4g]",
         args.channel_weighting,
-        args.temp_diff_normalization,
-        args.use_loss_scaler,
         args.input_noise_std,
         float(channel_weights.min()),
         float(channel_weights.max()),
@@ -877,10 +799,10 @@ def main() -> None:
                 model,
                 valid_loader,
                 device,
-                args.validation_rollout_steps,
+                args.rollout_steps,
                 amp_enabled,
                 args.amp_dtype,
-                args.terminal_loss_weight,
+                args.rollout_discount,
                 latitudes,
                 training_loss,
             )
@@ -964,7 +886,7 @@ def main() -> None:
                     },
                 )
             lead_hours = args.time_step * train_dataset.cadence_hours
-            validation_milestones = [
+            validation_leads = [
                 {
                     "lead": lead,
                     "lead_hours": lead * lead_hours,
@@ -972,20 +894,23 @@ def main() -> None:
                     "loss": validation.lead_losses[lead - 1],
                     "normalized_rmse": validation.lead_rmse[lead - 1],
                 }
-                for lead in range(1, args.validation_rollout_steps + 1)
-                if math.isclose((lead * lead_hours) % 72.0, 0.0, abs_tol=1e-8)
+                for lead in range(1, args.rollout_steps + 1)
             ]
             save_json(
                 run_dir / "validation" / f"epoch_{epoch + 1:04d}.json",
                 {
                     "epoch": epoch + 1,
-                    "validation_rollout_steps": args.validation_rollout_steps,
+                    "validation_rollout_steps": args.rollout_steps,
                     "forecast_step_hours": lead_hours,
                     "selection_score": validation.selection_score,
                     "mean_loss": validation.mean_loss,
                     "final_loss": validation.final_loss,
-                    "milestones_every_days": 3,
-                    "milestones": validation_milestones,
+                    "selection_horizon_hours": (args.rollout_steps * lead_hours),
+                    "selection_objective": {
+                        "name": "standardized_tendency_mse",
+                        "rollout_discount": args.rollout_discount,
+                    },
+                    "lead_metrics": validation_leads,
                 },
             )
             logger.info(

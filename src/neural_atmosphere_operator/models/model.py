@@ -6,11 +6,12 @@ import inspect
 from importlib import import_module
 from typing import Any, cast
 
+import torch
 from torch import Tensor, nn
 
 from configs.model_config import AtmosphereModelConfig
-from .transforms import stabilize_sht_constants
 
+from .transforms import stabilize_sht_constants
 
 # Follow NeuralOceanOperator's dependency boundary: the reference spherical
 # architectures are examples in torch-harmonics rather than stable core API.
@@ -143,29 +144,39 @@ class AtmosphereNeuralOperator(nn.Module):
         super().__init__()
         self.config = config or AtmosphereModelConfig()
         self.backbone = _build_sfno(self.config)
+        scale = (
+            torch.ones(self.config.out_channels, dtype=torch.float32)
+            if self.config.tendency_scale is None
+            else torch.tensor(self.config.tendency_scale, dtype=torch.float32)
+        )
+        self.register_buffer("tendency_scale", scale.view(1, -1, 1, 1))
 
     def forward(self, x: Tensor) -> Tensor:
         """Return the next state for an input shaped ``[B, C_in, H, W]``."""
         self._validate_input(x)
-        tendency = self.backbone(x)
+        standardized_tendency = self.backbone(x)
         expected_output_shape = (
             x.shape[0],
             self.config.out_channels,
             *self.config.img_size,
         )
-        if tendency.shape != expected_output_shape:
+        if standardized_tendency.shape != expected_output_shape:
             raise RuntimeError(
                 "SFNO backbone returned shape "
-                f"{tuple(tendency.shape)}, expected {expected_output_shape}"
+                f"{tuple(standardized_tendency.shape)}, expected {expected_output_shape}"
             )
 
         if not self.config.use_residual_connection:
-            return tendency
+            return standardized_tendency
 
         # AtmosphereZarrDataset concatenates history oldest-to-newest, making
         # the final out_channels the current normalized atmospheric state.
         current_state = x[:, -self.config.out_channels :]
-        return current_state + tendency
+        scale = self.tendency_scale.to(
+            device=standardized_tendency.device,
+            dtype=standardized_tendency.dtype,
+        )
+        return current_state + standardized_tendency * scale
 
     def rollout(self, x: Tensor, steps: int = 1) -> list[Tensor]:
         """Perform a differentiable autoregressive rollout for ``steps`` leads."""

@@ -18,8 +18,8 @@ if str(src_root) not in sys.path:
 
 from configs.model_config import (
     AtmosphereModelConfig,
-    makani_reference_model_config,
     large_e384_l8_ablation_config,
+    makani_reference_model_config,
 )
 from neural_atmosphere_operator.models.loss import (
     ChannelRelativeAtmosphereLoss,
@@ -27,9 +27,12 @@ from neural_atmosphere_operator.models.loss import (
     LossScaler,
     RolloutLoss,
     SpectralLoss,
+    StandardizedTendencyLoss,
+    graphcast_channel_weights,
     latitude_weighted_l1,
     latitude_weighted_mse,
     makani_auto_channel_weights,
+    standardized_tendency_scale,
 )
 from neural_atmosphere_operator.models.model import AtmosphereNeuralOperator
 
@@ -118,6 +121,46 @@ def test_makani_channel_and_temporal_difference_weighting():
         makani_auto_channel_weights(names, normalization_stds=[1.0] * 4)
 
 
+def test_standardized_tendency_parameterization_and_loss() -> None:
+    names = (
+        "10m_u_component_of_wind",
+        "2m_temperature",
+        "temperature@1000hPa",
+        "temperature@500hPa",
+        "specific_humidity@850hPa",
+    )
+    weights = graphcast_channel_weights(names)
+    assert weights.sum() == pytest.approx(1.0)
+    assert weights[2] == pytest.approx(2.0 * float(weights[3]))
+
+    scale = standardized_tendency_scale([2, 4, 8, 10, 20], [1, 1, 2, 5, 4])
+    prediction = scale.view(1, -1, 1, 1).expand(2, -1, 5, 8).clone()
+    target = torch.zeros_like(prediction)
+    loss = StandardizedTendencyLoss(scale, weights)(prediction, target)
+    assert loss == pytest.approx(1.0)
+
+
+def test_model_converts_standardized_tendency_to_state_units() -> None:
+    class UnitTendency(nn.Module):
+        def forward(self, values: torch.Tensor) -> torch.Tensor:
+            return torch.ones_like(values[:, :2])
+
+    config = AtmosphereModelConfig(
+        img_size=(13, 24),
+        in_channels=2,
+        out_channels=2,
+        scale_factor=3,
+        embed_dim=4,
+        num_layers=1,
+        tendency_scale=(0.25, 0.5),
+    )
+    model = AtmosphereNeuralOperator(config)
+    model.backbone = UnitTendency()
+    current = torch.randn(1, 2, 13, 24)
+    expected = current + torch.tensor([0.25, 0.5]).view(1, 2, 1, 1)
+    torch.testing.assert_close(model(current), expected)
+
+
 def test_optional_loss_scaler_balances_channel_gradient_norms():
     prediction = torch.randn(2, 3, 5, 8, requires_grad=True)
     coefficients = torch.tensor([1.0, 10.0, 100.0]).view(1, 3, 1, 1)
@@ -169,8 +212,7 @@ def test_sfno_twenty_four_year_half_degree_defaults_and_makani_reference():
     internal_height = (config.img_size[0] - 1) // config.scale_factor + 1
     internal_width = config.img_size[1] // config.scale_factor
     retained_modes = int(
-        min(internal_height, internal_width // 2)
-        * config.hard_thresholding_fraction
+        min(internal_height, internal_width // 2) * config.hard_thresholding_fraction
     )
     assert (internal_height, internal_width, retained_modes) == (181, 360, 180)
     assert config.embed_dim == 128

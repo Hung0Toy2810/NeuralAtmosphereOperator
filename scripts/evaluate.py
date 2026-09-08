@@ -15,12 +15,16 @@ import numpy as np
 import torch
 
 from configs.pipeline_config import DataPaths
+from neural_atmosphere_operator.models.loss import (
+    StandardizedTendencyLoss,
+    graphcast_channel_weights,
+)
 from neural_atmosphere_operator.pipeline.checkpoint import load_checkpoint
+from neural_atmosphere_operator.pipeline.contracts import enforce_forecast_contract
 from neural_atmosphere_operator.pipeline.dependencies import (
     enforce_checkpoint_runtime,
     validate_supported_runtime,
 )
-from neural_atmosphere_operator.pipeline.contracts import enforce_forecast_contract
 from neural_atmosphere_operator.pipeline.forecast import (
     autoregressive_predictions,
     lazy_target_provider,
@@ -36,11 +40,11 @@ from neural_atmosphere_operator.pipeline.runtime import (
     build_model,
     checkpoint_time_step,
     choose_device,
+    dataset_signature,
     model_config_from_dict,
     move_batch,
     save_json,
     statistics_signature,
-    dataset_signature,
 )
 from neural_atmosphere_operator.utils.logger import setup_logger
 
@@ -54,7 +58,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stds-path", type=Path)
     parser.add_argument("--climatology-path", type=Path)
     parser.add_argument("--split", choices=("train", "valid", "test"), default="test")
-    parser.add_argument("--rollout-steps", type=int, default=1)
+    parser.add_argument(
+        "--rollout-steps",
+        type=int,
+        help="Must match the rollout horizon stored in the training checkpoint",
+    )
     parser.add_argument(
         "--report-every-days",
         type=int,
@@ -73,7 +81,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sample-selection",
         choices=("first", "evenly_spaced"),
-        default="evenly_spaced",
+        default="first",
     )
     parser.add_argument("--device", default="auto")
     parser.add_argument("--amp-dtype", choices=("bfloat16", "float16"))
@@ -136,7 +144,9 @@ def build_milestone_report(
 
 def main() -> None:
     args = parse_args()
-    if min(args.rollout_steps, args.batch_size) < 1:
+    if args.batch_size < 1 or (
+        args.rollout_steps is not None and args.rollout_steps < 1
+    ):
         raise ValueError("rollout steps and batch size must be positive")
     if args.report_every_days is not None and args.report_every_days < 1:
         raise ValueError("report-every-days must be positive")
@@ -166,6 +176,11 @@ def main() -> None:
     if mismatches:
         logger.warning("Runtime mismatch: %s", ", ".join(mismatches))
     model_config = model_config_from_dict(checkpoint["model_config"])
+    if model_config.tendency_scale is None:
+        raise ValueError(
+            "Checkpoint predates standardized-tendency training and has no "
+            "comparable objective contract"
+        )
     model = build_model(model_config, device)
     model.load_state_dict(checkpoint["model_state"])
     model.eval()
@@ -174,17 +189,28 @@ def main() -> None:
 
     paths = DataPaths(args.data_dir.expanduser().resolve())
     training_config = checkpoint.get("training_config", {})
+    trained_rollout_steps = int(training_config.get("rollout_steps", 1))
+    rollout_steps = (
+        trained_rollout_steps if args.rollout_steps is None else args.rollout_steps
+    )
+    if rollout_steps != trained_rollout_steps:
+        raise ValueError(
+            "Comparable validation/test loss requires the checkpoint's training "
+            f"horizon K={trained_rollout_steps}; received K={rollout_steps}"
+        )
     amp_dtype = args.amp_dtype or str(training_config.get("amp_dtype", "bfloat16"))
     history = model_config.in_channels // model_config.out_channels - 1
     time_step = checkpoint_time_step(training_config, args.time_step)
     means_path = args.means_path or paths.means
     stds_path = args.stds_path or paths.stds
     climatology_path = args.climatology_path or means_path.parent / "time_means.npy"
+    time_diff_stds_path = means_path.parent / f"time_diff_stds_dt{time_step}.npy"
     saved_data_signature = training_config.get("data_signature", {})
     for name, path in (
         ("means", means_path),
         ("stds", stds_path),
         ("climatology", climatology_path),
+        ("time_diff_stds", time_diff_stds_path),
     ):
         saved = saved_data_signature.get(name)
         current = statistics_signature(path)
@@ -197,7 +223,7 @@ def main() -> None:
     loader, dataset = build_loader(
         paths,
         args.split,
-        rollout_steps=args.rollout_steps,
+        rollout_steps=rollout_steps,
         history=history,
         time_step=time_step,
         batch_size=args.batch_size,
@@ -235,9 +261,29 @@ def main() -> None:
             "Climatology grid must match evaluation grid; cropping is forbidden"
         )
     latitudes = torch.as_tensor(dataset.latitudes, device=device)
-    accumulators = [LeadMetricAccumulator() for _ in range(args.rollout_steps)]
+    tendency_scale = model_config.tendency_scale
+    assert tendency_scale is not None
+    channel_weighting = str(training_config.get("channel_weighting", "graphcast"))
+    if channel_weighting == "graphcast":
+        loss_channel_weights = graphcast_channel_weights(dataset.channel_names)
+    elif channel_weighting == "constant":
+        loss_channel_weights = torch.full(
+            (len(dataset.channel_names),), 1.0 / len(dataset.channel_names)
+        )
+    else:
+        raise ValueError(
+            f"Unsupported checkpoint channel weighting {channel_weighting!r}"
+        )
+    objective = StandardizedTendencyLoss(
+        tendency_scale=tendency_scale,
+        channel_weights=loss_channel_weights,
+        latitudes=latitudes,
+    ).to(device)
+    objective_loss_sums = torch.zeros(rollout_steps, dtype=torch.float64, device=device)
+    objective_samples = 0
+    accumulators = [LeadMetricAccumulator() for _ in range(rollout_steps)]
     baseline_accumulators = {
-        name: [LeadMetricAccumulator() for _ in range(args.rollout_steps)]
+        name: [LeadMetricAccumulator() for _ in range(rollout_steps)]
         for name in ("persistence", "training_climatology")
     }
     amp_enabled = (
@@ -254,10 +300,17 @@ def main() -> None:
                     pairs = autoregressive_predictions(
                         model,
                         batch,
-                        args.rollout_steps,
+                        rollout_steps,
                         target_provider=lazy_target_provider(dataset, raw_batch),
                     )
                     for lead, (prediction, target) in enumerate(pairs):
+                        size = prediction.shape[0]
+                        lead_loss = objective(prediction, target)
+                        if not torch.isfinite(lead_loss):
+                            raise FloatingPointError(
+                                f"Non-finite evaluation loss at lead {lead + 1}"
+                            )
+                        objective_loss_sums[lead] += lead_loss.double() * size
                         accumulators[lead].update(
                             prediction.float(),
                             target.float(),
@@ -279,6 +332,7 @@ def main() -> None:
                                 latitudes,
                                 normalized_climatology,
                             )
+                objective_samples += batch["input"].shape[0]
                 if (batch_index + 1) % 20 == 0:
                     logger.info("Processed %d/%d batches", batch_index + 1, len(loader))
     finally:
@@ -287,7 +341,7 @@ def main() -> None:
     lead_hours = time_step * dataset.cadence_hours
     if (
         args.report_every_days
-        and args.rollout_steps * lead_hours < args.report_every_days * 24
+        and rollout_steps * lead_hours < args.report_every_days * 24
     ):
         raise ValueError(
             "rollout horizon is shorter than the requested report interval"
@@ -306,6 +360,16 @@ def main() -> None:
             lead, dataset.channel_names, lead_hours, dataset.channel_units
         )
     ]
+    if objective_samples < 1:
+        raise ValueError("Evaluation requires at least one sliding window")
+    objective_by_lead = tuple((objective_loss_sums / objective_samples).cpu().tolist())
+    rollout_discount = float(training_config.get("rollout_discount", 1.0))
+    lead_weights = tuple(rollout_discount**lead for lead in range(rollout_steps))
+    objective_loss = sum(
+        weight * loss for weight, loss in zip(lead_weights, objective_by_lead)
+    ) / sum(lead_weights)
+    for row, loss in zip(rows, objective_by_lead):
+        row["objective_loss"] = loss
     write_csv(output_dir / "metrics_by_lead.csv", rows)
     write_csv(output_dir / "metrics_by_channel.csv", channel_rows)
     for name, items in baseline_accumulators.items():
@@ -342,6 +406,7 @@ def main() -> None:
                 ("means", means_path),
                 ("stds", stds_path),
                 ("climatology", climatology_path),
+                ("time_diff_stds", time_diff_stds_path),
             )
         },
         "initializations": [
@@ -349,12 +414,25 @@ def main() -> None:
             for index in dataset.sample_indices
         ],
         "split": args.split,
-        "rollout_steps": args.rollout_steps,
+        "rollout_steps": rollout_steps,
+        "windowing": (
+            "all_consecutive_sliding_windows"
+            if args.max_samples is None
+            else f"{args.sample_selection}_{len(dataset)}_sliding_windows"
+        ),
         "samples": len(dataset),
         "data_first_time": dataset.first_time,
         "data_last_time": dataset.last_time,
         "terminal_normalized_rmse": float(rows[-1]["normalized_rmse"]),
         "terminal_normalized_acc": float(rows[-1]["normalized_acc"]),
+        "objective": {
+            "name": "standardized_tendency_mse",
+            "loss": objective_loss,
+            "loss_by_lead": objective_by_lead,
+            "rollout_discount": rollout_discount,
+            "channel_weighting": channel_weighting,
+            "channel_weights": loss_channel_weights.tolist(),
+        },
         "acc_definition": (
             "mean_per_initialization_spatial_acc_with_training_long_term_climatology"
         ),
@@ -385,7 +463,7 @@ def main() -> None:
                 "data_first_time": dataset.first_time,
                 "data_last_time": dataset.last_time,
                 "report_every_days": args.report_every_days,
-                "rollout_steps": args.rollout_steps,
+                "rollout_steps": rollout_steps,
                 "samples": len(dataset),
                 "levels": levels,
             },

@@ -49,9 +49,10 @@ metadata separately for every channel.
 One physical Zarr store is sliced chronologically: training is 1995--2018,
 validation is the full year 2019, and the untouched test year is 2020. This
 provides 35,064 / 1,460 / 1,464 states respectively. Default training selection
-uses 32 evenly spaced validation initializations with 60 leads. The same panel
-must be used for all candidate models; final evaluation should cover more
-initializations and report uncertainty across weather episodes.
+uses 32 evenly spaced validation initializations with eight free-running leads
+(6--48 hours). The same panel must be used for all candidate models; final
+evaluation should cover more initializations and report uncertainty across
+weather episodes.
 
 Statistics are streamed in float64 with bounded memory, written as immutable
 version-4 bundles, and checked by artifact hashes, coordinates, units, cadence
@@ -62,18 +63,26 @@ missing periods under a new download contract.
 
 `audit_training_readiness.py` projects both the compressed download and peak
 disk usage from the local one-day sample. `estimate_vram.py` is intentionally a
-conservative analytical planner; `preflight_a100.py` measures actual optimizer updates and long validation on
-the target GPU; a analytical planner or random-loss benchmark is insufficient.
+conservative analytical planner; `preflight_gpu.py` measures actual optimizer
+updates and stage-matched validation on the selected CUDA GPU.
 
 ## Recommended training curriculum
 
 The default budget is 25 epochs. `--epochs 0` explicitly opts into an unlimited
 run; it is not the default. Use a fixed budget for comparisons, and choose
-checkpoints using validation only. See [the A100 runbook](docs/A100_TRAINING.md)
+checkpoints using validation only. See [the GPU runbook](docs/GPU_TRAINING.md)
 for data verification, actual CUDA preflight, and launch commands.
 
-Start with one-step training. Increase rollout length only after convergence,
-initializing a new optimizer stage from the previous best weights:
+Training and validation always use the same horizon and the same loss. The
+curriculum is K=1, 2, 4, 8; each later stage initializes from the preceding
+stage's best checkpoint and starts a new optimizer with a lower learning rate.
+At six-hour cadence these stages cover 6, 12, 24, and 48 hours respectively.
+Validation scans every consecutive temporal window unless an explicit pilot
+limit is supplied.
+
+The finite 25-epoch budget is also protected by a default patience of five
+validation rounds. With `--early-stopping-min-delta 0`, every strict improvement
+resets patience and `best.pt` preserves the lowest stage-matched validation loss.
 
 ```bash
 # Stage 1: stable one-step objective
@@ -81,7 +90,6 @@ python scripts/train.py \
   --run-dir runs/sfno_stage1 \
   --stage-name sfno_1step \
   --rollout-steps 1 \
-  --validation-rollout-steps 60 \
   --validation-batch-size 1 \
   --batch-size 4 \
   --gradient-accumulation 2 \
@@ -94,18 +102,33 @@ python scripts/train.py \
   --stage-name sfno_2step \
   --init-checkpoint runs/sfno_stage1/checkpoints/best.pt \
   --rollout-steps 2 \
-  --validation-rollout-steps 60 \
   --validation-batch-size 1 \
   --gradient-checkpointing \
   --batch-size 4 \
   --gradient-accumulation 2 \
-  --epochs 5 --warmup-epochs 1 --patience 3 \
+  --epochs 10 --warmup-epochs 1 --patience 3 \
   --learning-rate 1e-4
+
+# Stage 3: K=4 fine-tuning
+python scripts/train.py \
+  --run-dir runs/sfno_stage3 --stage-name sfno_4step \
+  --init-checkpoint runs/sfno_stage2/checkpoints/best.pt \
+  --rollout-steps 4 --gradient-checkpointing \
+  --epochs 7 --warmup-epochs 0 --patience 3 \
+  --learning-rate 5e-5
+
+# Stage 4: K=8 final fine-tuning
+python scripts/train.py \
+  --run-dir runs/sfno_stage4 --stage-name sfno_8step \
+  --init-checkpoint runs/sfno_stage3/checkpoints/best.pt \
+  --rollout-steps 8 --gradient-checkpointing \
+  --epochs 5 --warmup-epochs 0 --patience 3 \
+  --learning-rate 2.5e-5
 ```
 
 Use `--resume` only to continue the exact same numerical trajectory. Use
 `--init-checkpoint` for a new curriculum stage; optimizer, scheduler and early
-stopping state intentionally restart. A version-2 epoch-end checkpoint stores
+stopping state intentionally restart. A version-3 epoch-end checkpoint stores
 the model, complete AdamW state (`step`, `exp_avg`, `exp_avg_sq` and parameter
 groups), learning-rate scheduler, AMP loss scaler, completed-update counter,
 early-stopping state, Python/NumPy/PyTorch RNG and the training-loader generator.
@@ -127,14 +150,14 @@ fraction and non-finite count. Treat sustained clipping near 100% as evidence
 that `--gradient-clip 1.0` is too restrictive; decide from the real-data pilot
 rather than changing this threshold speculatively.
 
-The primary objective follows the official Makani SFNO recipe more closely than
-plain normalized MSE:
+The primary objective follows GraphCast's deterministic time-difference
+standardization and SFNO's full autoregressive backpropagation:
 
 - exact spherical-cell-area weighting on the equiangular grid;
-- Makani `auto` channel priorities (including pressure-level weights);
-- temporal-difference scaling `global_std / time_diff_std`, computed from the
-  training split at the configured forecast stride;
-- loss at every autoregressive lead and final-lead-aware checkpoint selection.
+- inverse time-difference variance scaling from the training split;
+- variable-balanced pressure weights and documented surface weights;
+- a uniform mean over exactly K leads, with gradients through the full rollout;
+- the identical objective and K for train, validation, and test reporting.
 
 Evaluation computes a spatial ACC for each forecast initialization and channel
 after subtracting the training-only long-term spatial climatology in
@@ -142,12 +165,7 @@ after subtracting the training-only long-term spatial climatology in
 long-term-climatology definition, not WeatherBench2's day-of-year/time-of-day
 climatology.
 
-Spectral loss, channel-relative loss, input noise, and the NeuralOceanOperator
-per-channel backward `LossScaler` are available as explicit ablations. They are
-disabled by default because combining them with Makani's channel weighting
-changes the official baseline objective. Enable only after a controlled
-lead-wise comparison, for example `--use-loss-scaler` or
-`--input-noise-std 0.01`.
+Input noise remains an explicit ablation. It is disabled for the baseline.
 
 The optimizer defaults are conservative for a single accelerator (AdamW,
 update-level warmup/cosine decay, accumulation, clipping and BF16). The locked
@@ -167,19 +185,19 @@ the paper's compact set because this WB2 archive does not contain 100-m winds.
 
 ```bash
 python scripts/evaluate.py \
-  --checkpoint runs/sfno_stage2/checkpoints/best.pt \
-  --split valid --rollout-steps 60 --report-every-days 3
+  --checkpoint runs/sfno_stage4/checkpoints/best.pt \
+  --split valid --report-every-days 1
 
-# Final untouched 31-day period; run only after model selection is frozen.
+# Final untouched 2020 test year; run only after model selection is frozen.
 python scripts/evaluate.py \
-  --checkpoint runs/sfno_stage2/checkpoints/best.pt \
-  --split test --rollout-steps 120 --report-every-days 3
+  --checkpoint runs/sfno_stage4/checkpoints/best.pt \
+  --split test --report-every-days 1
 
 python scripts/rollout.py \
-  --checkpoint runs/sfno_stage2/checkpoints/best.pt \
-  --rollout-steps 120 --samples 1
+  --checkpoint runs/sfno_stage4/checkpoints/best.pt \
+  --rollout-steps 8 --samples 1
 
-python scripts/plot_results.py --run-dir runs/sfno_stage2
+python scripts/plot_results.py --run-dir runs/sfno_stage4
 ```
 
 Checkpoints store the model/training configuration, optimizer, update-level
@@ -218,4 +236,4 @@ The forward SHT additionally separates the constant component analytically to
 prevent float32 quadrature leakage amplified by InstanceNorm. This preserves
 constants on the tested full CPU grid without adding parameters; numerical
 results can differ from unmodified torch-harmonics. Near-constant sensitivity
-and CUDA behavior require the preflight/pilot checks in the A100 runbook.
+and CUDA behavior require the preflight/pilot checks in the GPU runbook.

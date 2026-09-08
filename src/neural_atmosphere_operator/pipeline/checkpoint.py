@@ -16,7 +16,7 @@ from torch.optim.lr_scheduler import LRScheduler
 from .dependencies import runtime_fingerprint
 
 
-CHECKPOINT_VERSION = 2
+CHECKPOINT_VERSION = 3
 
 _REQUIRED_KEYS = frozenset(
     {
