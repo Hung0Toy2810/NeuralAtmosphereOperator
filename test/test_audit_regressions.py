@@ -18,7 +18,11 @@ from torch.amp.grad_scaler import GradScaler
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
-from configs.download_data_config import WeatherBenchDownloadConfig, channel_names
+from configs.download_data_config import (
+    AVAILABLE_PRESSURE_LEVELS,
+    WeatherBenchDownloadConfig,
+    channel_names,
+)
 from configs.model_config import AtmosphereModelConfig
 from neural_atmosphere_operator.data.loader import (
     AtmosphereDatasetConfig,
@@ -31,18 +35,17 @@ from scripts.compute_stats import spherical_channel_statistics
 UNITS = (
     ["m s**-1"] * 2
     + ["K", "Pa", "Pa", "kg m**-2"]
-    + ["m**2 s**-2"] * 5
-    + ["m s**-1"] * 8
-    + ["K"] * 4
-    + ["kg kg**-1"] * 2
-    + ["1"]
+    + ["m s**-1"] * (2 * len(AVAILABLE_PRESSURE_LEVELS))
+    + ["m**2 s**-2"] * 13
+    + ["K"] * 13
+    + ["kg kg**-1"] * 13
 )
 
 
 def make_store(
     path, year, *, cadence=6, latitude=None, longitude=None, transpose=False
 ):
-    data = np.random.default_rng(17).normal(size=(24, 26, 13, 24)).astype("float32")
+    data = np.random.default_rng(17).normal(size=(24, len(channel_names()), 13, 24)).astype("float32")
     ds = xr.Dataset(
         {"state": (("time", "channel", "latitude", "longitude"), data)},
         coords={
@@ -595,7 +598,7 @@ def test_model_constant_fields_and_transform_aliases():
     config = AtmosphereModelConfig(img_size=(13, 24), embed_dim=8, num_layers=2)
     torch.manual_seed(42)
     model = AtmosphereNeuralOperator(config)
-    output = model(torch.ones(1, 26, 13, 24))
+    output = model(torch.ones(1, config.in_channels, 13, 24))
     assert output.std(dim=(-2, -1)).max() < 1e-5
     output.square().mean().backward()
     assert all(

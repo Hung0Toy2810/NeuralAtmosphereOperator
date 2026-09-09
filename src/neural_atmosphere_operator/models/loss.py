@@ -72,14 +72,14 @@ def standardized_tendency_scale(
 
 
 def graphcast_channel_weights(channel_names: Sequence[str]) -> Tensor:
-    """Return variable- and pressure-balanced weights for this channel subset.
+    """Return variable- and pressure-balanced weights for the channel contract.
 
     Each pressure-level variable receives total weight one, distributed across
     its selected levels in proportion to pressure. Surface weights shared with
     GraphCast use its deterministic objective; the additional ``sp`` and
     ``tcwv`` channels use NVIDIA Makani's documented SFNO weights. The final
     vector is normalized to sum to one, which preserves the gradient direction
-    while keeping a stable loss scale for the compact channel subset.
+    while keeping a stable loss scale for the fixed channel contract.
     """
     if not channel_names:
         raise ValueError("channel_names cannot be empty")

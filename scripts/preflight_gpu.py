@@ -42,6 +42,7 @@ from scripts.train import validate
 
 def main():
     training_defaults = TrainingConfig()
+    model_defaults = AtmosphereModelConfig()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=DataPaths().root)
     parser.add_argument("--train-data", type=Path)
@@ -56,8 +57,8 @@ def main():
     parser.add_argument(
         "--stabilize-sht-constants", action=argparse.BooleanOptionalAction, default=True
     )
-    parser.add_argument("--embed-dim", type=int, default=128)
-    parser.add_argument("--num-layers", type=int, default=6)
+    parser.add_argument("--embed-dim", type=int, default=model_defaults.embed_dim)
+    parser.add_argument("--num-layers", type=int, default=model_defaults.num_layers)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--output", type=Path, default=Path("runs/gpu_preflight.json"))
     args = parser.parse_args()
@@ -129,6 +130,8 @@ def main():
         )
         config = AtmosphereModelConfig(
             img_size=train.spatial_shape,
+            in_channels=train.config.channel_count,
+            out_channels=train.config.channel_count,
             embed_dim=args.embed_dim,
             num_layers=args.num_layers,
             stabilize_sht_constants=args.stabilize_sht_constants,

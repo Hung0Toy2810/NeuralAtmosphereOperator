@@ -56,7 +56,7 @@ def main() -> None:
     parser.add_argument(
         "--sample-zarr",
         type=Path,
-        default=PROJECT_ROOT / "data" / "dataset" / "era5_sample_0p5_26ch.zarr",
+        default=PROJECT_ROOT / "data" / "dataset" / "era5_sample_0p5_71ch.zarr",
     )
     parser.add_argument("--sample-timesteps", type=int, default=4)
     parser.add_argument(

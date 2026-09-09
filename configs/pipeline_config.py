@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from configs.download_data_config import DEFAULT_DATASET_FILENAME
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -16,7 +18,7 @@ class DataPaths:
 
     @property
     def dataset(self) -> Path:
-        return self.root / "era5_1995_2020_0p5deg_26ch.zarr"
+        return self.root / DEFAULT_DATASET_FILENAME
 
     @property
     def train(self) -> Path:
@@ -70,9 +72,10 @@ class TrainingConfig:
     # An infinite run still needs a finite cosine-decay horizon. After this
     # many epochs the scheduler remains at min_learning_rate.
     scheduler_epochs: int = 25
-    batch_size: int = 4
+    # Start the wider model with a small microbatch, preserving effective B=8.
+    batch_size: int = 1
     validation_batch_size: int = 1
-    gradient_accumulation: int = 2
+    gradient_accumulation: int = 8
     learning_rate: float = 5e-4
     weight_decay: float = 1e-4
     min_learning_rate: float = 1e-6

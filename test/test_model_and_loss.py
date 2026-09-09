@@ -16,11 +16,7 @@ src_root = project_root / "src"
 if str(src_root) not in sys.path:
     sys.path.insert(0, str(src_root))
 
-from configs.model_config import (
-    AtmosphereModelConfig,
-    large_e384_l8_ablation_config,
-    makani_reference_model_config,
-)
+from configs.model_config import AtmosphereModelConfig
 from neural_atmosphere_operator.models.loss import (
     ChannelRelativeAtmosphereLoss,
     CombinedAtmosphereLoss,
@@ -203,11 +199,11 @@ def test_rollout_loss_uses_explicit_time_axis_when_batch_equals_steps():
     torch.testing.assert_close(time_first_loss, loss)
 
 
-def test_sfno_twenty_four_year_half_degree_defaults_and_makani_reference():
+def test_sfno_twenty_four_year_half_degree_defaults():
     config = AtmosphereModelConfig()
 
     assert config.img_size == (361, 720)
-    assert config.in_channels == config.out_channels == 26
+    assert config.in_channels == config.out_channels == 71
     assert config.scale_factor == 2
     internal_height = (config.img_size[0] - 1) // config.scale_factor + 1
     internal_width = config.img_size[1] // config.scale_factor
@@ -215,19 +211,12 @@ def test_sfno_twenty_four_year_half_degree_defaults_and_makani_reference():
         min(internal_height, internal_width // 2) * config.hard_thresholding_fraction
     )
     assert (internal_height, internal_width, retained_modes) == (181, 360, 180)
-    assert config.embed_dim == 128
+    assert config.embed_dim == 192
     assert config.num_layers == 6
     assert config.activation_function == "gelu"
     assert config.normalization_layer == "instance_norm"
     assert config.mlp_ratio == 2.0
     assert config.operator_type == "driscoll-healy"
-
-    reference = makani_reference_model_config()
-    assert reference.embed_dim == 384
-    assert reference.num_layers == 8
-    assert reference == large_e384_l8_ablation_config()
-    assert reference.scale_factor == 2
-
 
 def test_sfno_grid_must_be_exactly_downsampleable():
     with pytest.raises(ValueError, match="height"):

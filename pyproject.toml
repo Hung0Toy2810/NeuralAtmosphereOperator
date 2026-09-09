@@ -29,16 +29,16 @@ include = ["neural_atmosphere_operator*", "configs*"]
 exclude = ["data*", "scripts*", "test*"]
 
 [tool.pyright]
-include = ["src", "configs", "scripts", "test"]
+include = ["src", "configs", "scripts", "test", "audit/remediation"]
 exclude = [
-    "audit",
+    "audit/2026-09-06",
     "data/dataset",
     "**/__pycache__",
     "**/.pytest_cache",
     "**/.venv",
 ]
-# Audit harnesses are immutable evidence, while editable packages outside this
-# repository are dependencies. Pylance should report diagnostics only for the
-# application, configuration, scripts and regression tests listed above.
-ignore = ["audit", "../neuraloperator"]
+# The dated audit snapshot is immutable evidence. Remediation harnesses remain
+# executable and are checked with the application; external editable packages
+# are dependencies rather than part of this project's Pylance scope.
+ignore = ["audit/2026-09-06", "../neuraloperator"]
 extraPaths = ["src", "configs", "."]

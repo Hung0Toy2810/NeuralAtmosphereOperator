@@ -28,9 +28,9 @@ with torch.inference_mode():
     for name in ("zero", "constant", "near_constant"):
         start = time.perf_counter()
         x = (
-            torch.zeros(1, 26, 361, 720)
+            torch.zeros(1, config.in_channels, *config.img_size)
             if name == "zero"
-            else torch.ones(1, 26, 361, 720)
+            else torch.ones(1, config.in_channels, *config.img_size)
         )
         if name == "near_constant":
             x = x + 1e-5 * torch.randn_like(x)

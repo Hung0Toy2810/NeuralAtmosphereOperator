@@ -1,12 +1,13 @@
-"""Download an ERA5 variable/level/time subset from the public WeatherBench2 zarr.
+"""Download the fixed 71-channel ERA5 state from public WeatherBench2 Zarr.
 
 Requires: pip install xarray zarr gcsfs dask
 
 Usage:
     python data/download_data.py
 
-Edit WeatherBenchDownloadConfig (or pass a custom instance to main) to change
-variables, pressure levels, date range, or output path.
+The channel and pressure-level contract is immutable. Configuration controls
+the date range, batching and output path; field values are conservatively
+regridded from 0.25 to 0.5 degrees.
 """
 
 from __future__ import annotations
@@ -32,10 +33,15 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from configs.download_data_config import WeatherBenchDownloadConfig
+from configs.download_data_config import (
+    AVAILABLE_PRESSURE_LEVELS,
+    PRESSURE_VARIABLES,
+    SURFACE_VARIABLES,
+)
 
 REGRIDDING_VERSION = 2
 REGRIDDING_METHOD = "first_order_conservative_area_overlap_aligned_periodic"
-DOWNLOAD_CONTRACT_VERSION = 1
+DOWNLOAD_CONTRACT_VERSION = 2
 
 
 def download_contract(config: WeatherBenchDownloadConfig) -> dict[str, Any]:
@@ -43,10 +49,9 @@ def download_contract(config: WeatherBenchDownloadConfig) -> dict[str, Any]:
     return {
         "schema_version": DOWNLOAD_CONTRACT_VERSION,
         "source": config.zarr_url,
-        "surface_variables": list(config.surface_variables),
-        "level_selections": [
-            [variable, list(levels)] for variable, levels in config.level_selections
-        ],
+        "surface_variables": list(SURFACE_VARIABLES),
+        "pressure_variables": list(PRESSURE_VARIABLES),
+        "pressure_levels": list(AVAILABLE_PRESSURE_LEVELS),
         "channel_names": list(config.channel_names),
         "start_date": config.start_date,
         "end_date": config.end_date,
@@ -87,18 +92,16 @@ def validate_resume_contract(
         )
 
 
-def _channel_metadata(
-    subset: xr.Dataset, config: WeatherBenchDownloadConfig
-) -> dict[str, tuple[str, np.ndarray]]:
+def _channel_metadata(subset: xr.Dataset) -> dict[str, tuple[str, np.ndarray]]:
     """Build metadata coordinates aligned exactly with the flattened channels."""
     units: list[str] = []
     long_names: list[str] = []
     source_variables: list[str] = []
     pressure_levels: list[float] = []
-    selections = [(name, None) for name in config.surface_variables] + [
+    selections = [(name, None) for name in SURFACE_VARIABLES] + [
         (variable, level)
-        for variable, levels in config.level_selections
-        for level in levels
+        for variable in PRESSURE_VARIABLES
+        for level in AVAILABLE_PRESSURE_LEVELS
     ]
     for variable, level in selections:
         attrs = subset[variable].attrs
@@ -219,7 +222,27 @@ def _regrid_data_array(field: xr.DataArray) -> xr.DataArray:
     ).assign_coords(latitude=target_latitudes, longitude=target_longitudes)
 
 
-def build_subset(
+def validate_source_channels(source: xr.Dataset) -> None:
+    """Check the complete fixed 71-channel state using only source metadata."""
+    surface_dims = {"time", "latitude", "longitude"}
+    selections = [(name, surface_dims) for name in SURFACE_VARIABLES] + [
+        (name, surface_dims | {"level"}) for name in PRESSURE_VARIABLES
+    ]
+    missing = [name for name, _ in selections if name not in source.data_vars]
+    if missing:
+        raise ValueError(f"Source is missing requested variables: {missing}")
+    for name, dimensions in selections:
+        if set(source[name].dims) != dimensions:
+            raise ValueError(f"Unexpected source dimensions for {name}: {source[name].dims}")
+    if "level" not in source.coords:
+        raise ValueError("Source is missing the pressure-level coordinate")
+    available = set(source.level.values.tolist())
+    missing_levels = set(AVAILABLE_PRESSURE_LEVELS) - available
+    if missing_levels:
+        raise ValueError(f"Source is missing pressure levels: {sorted(missing_levels)}")
+
+
+def build_state(
     config: WeatherBenchDownloadConfig, source: xr.Dataset | None = None
 ) -> xr.Dataset:
     """Build a lazy, conservatively regridded ``state[time,channel,lat,lon]``."""
@@ -231,19 +254,29 @@ def build_subset(
     else:
         full = source
 
-    variables = list(config.surface_variables) + [
-        variable for variable, _ in config.level_selections
-    ]
+    try:
+        validate_source_channels(full)
+    except Exception:
+        if source is None:
+            full.close()
+        raise
+
+    variables = list(SURFACE_VARIABLES + PRESSURE_VARIABLES)
     step = config.time_stride_hours // 6  # dataset is natively 6-hourly
     subset = full[variables].sel(time=slice(config.start_date, config.end_date))
     subset = subset.isel(time=slice(None, None, step))
 
     channels: list[xr.DataArray] = []
-    for variable in config.surface_variables:
+    for variable in SURFACE_VARIABLES:
         channels.append(_regrid_data_array(subset[variable]))
-    for variable, levels in config.level_selections:
-        regridded = _regrid_data_array(subset[variable].sel(level=list(levels)))
-        channels.extend(regridded.sel(level=level, drop=True) for level in levels)
+    for variable in PRESSURE_VARIABLES:
+        regridded = _regrid_data_array(
+            subset[variable].sel(level=list(AVAILABLE_PRESSURE_LEVELS))
+        )
+        channels.extend(
+            regridded.sel(level=level, drop=True)
+            for level in AVAILABLE_PRESSURE_LEVELS
+        )
     state = xr.concat(
         channels, dim=xr.IndexVariable("channel", list(config.channel_names))
     )
@@ -254,7 +287,7 @@ def build_subset(
         "long_name": "flattened multivariate atmospheric state",
         "channel_metadata": "coordinates aligned with the channel dimension",
     }
-    state = state.assign_coords(_channel_metadata(subset, config))
+    state = state.assign_coords(_channel_metadata(subset))
     state = state.chunk(
         {"time": 1, "channel": config.channel_count, "latitude": 361, "longitude": 720}
     )
@@ -268,7 +301,7 @@ def build_subset(
     )
 
     print(
-        f"Selected {config.channel_count} channels, {result.sizes['time']} timesteps, "
+        f"Fixed {config.channel_count}-channel state, {result.sizes['time']} timesteps, "
         f"grid={result.sizes['latitude']}x{result.sizes['longitude']}"
     )
     return result
@@ -417,27 +450,27 @@ def main(config: WeatherBenchDownloadConfig | None = None) -> None:
                 start_date=cursor.date().isoformat(),
                 end_date=batch_end.date().isoformat(),
             )
-            subset = build_subset(batch_config, source)
-            _validate_timestamps(subset, batch_config)
+            batch_state = build_state(batch_config, source)
+            _validate_timestamps(batch_state, batch_config)
             # Batch-local date bounds are an implementation detail. Persist the
             # complete requested contract on every append target.
-            subset.attrs.update(
+            batch_state.attrs.update(
                 download_contract_json=full_contract_json,
                 download_contract_sha256=full_contract_fingerprint,
             )
             print(f"Writing {cursor.date()}..{batch_end.date()} to {partial_path}")
             if committed_steps == 0:
-                subset.to_zarr(
+                batch_state.to_zarr(
                     cast(Any, str(partial_path)), mode="w", consolidated=False
                 )
             else:
-                subset.to_zarr(
+                batch_state.to_zarr(
                     cast(Any, str(partial_path)),
                     mode="a",
                     append_dim="time",
                     consolidated=False,
                 )
-            committed_steps += int(subset.sizes["time"])
+            committed_steps += int(batch_state.sizes["time"])
             cursor = batch_end + timedelta(days=1)
             _write_progress(
                 progress_path,

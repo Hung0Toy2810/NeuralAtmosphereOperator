@@ -3,10 +3,11 @@
     "src",
     "configs",
     "scripts",
-    "test"
+    "test",
+    "audit/remediation"
   ],
   "exclude": [
-    "audit",
+    "audit/2026-09-06",
     "data/dataset",
     "**/__pycache__",
     "**/.pytest_cache",

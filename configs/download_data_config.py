@@ -27,10 +27,11 @@ AVAILABLE_PRESSURE_LEVELS: tuple[int, ...] = (
     1000,
 )
 
-# WB2-native approximation of the compact 26-channel SFNO set. WeatherBench2
-# does not contain the paper's 100-m winds, so q1000/q850 supply lower-
-# tropospheric moisture instead. Each variable has its own selected levels.
-DEFAULT_SURFACE_VARIABLES: tuple[str, ...] = (
+# All channels of the SFNO 73-channel state available in this WB2 archive:
+# six surface fields plus five variables on all thirteen pressure levels.
+# The source has no 100-m u/v winds, so this is a 71-channel state. Derived
+# diagnostics and static fields are not additional prognostic channels.
+SURFACE_VARIABLES: tuple[str, ...] = (
     "10m_u_component_of_wind",
     "10m_v_component_of_wind",
     "2m_temperature",
@@ -38,37 +39,34 @@ DEFAULT_SURFACE_VARIABLES: tuple[str, ...] = (
     "mean_sea_level_pressure",
     "total_column_water_vapour",
 )
-DEFAULT_LEVEL_SELECTIONS: tuple[tuple[str, tuple[int, ...]], ...] = (
-    ("geopotential", (1000, 850, 500, 250, 50)),
-    ("u_component_of_wind", (1000, 850, 500, 250)),
-    ("v_component_of_wind", (1000, 850, 500, 250)),
-    ("temperature", (850, 500, 250, 100)),
-    ("specific_humidity", (1000, 850)),
-    ("relative_humidity", (500,)),
+PRESSURE_VARIABLES: tuple[str, ...] = (
+    "u_component_of_wind",
+    "v_component_of_wind",
+    "geopotential",
+    "temperature",
+    "specific_humidity",
 )
 
 
-def channel_names(
-    surface_variables: tuple[str, ...] = DEFAULT_SURFACE_VARIABLES,
-    level_selections: tuple[
-        tuple[str, tuple[int, ...]], ...
-    ] = DEFAULT_LEVEL_SELECTIONS,
-) -> tuple[str, ...]:
-    """Return the canonical flattened state-channel order."""
-    return surface_variables + tuple(
+def channel_names() -> tuple[str, ...]:
+    """Return the immutable flattened state-channel order."""
+    return SURFACE_VARIABLES + tuple(
         f"{variable}@{level}hPa"
-        for variable, levels in level_selections
-        for level in levels
+        for variable in PRESSURE_VARIABLES
+        for level in AVAILABLE_PRESSURE_LEVELS
     )
+
+
+DEFAULT_CHANNEL_COUNT = len(channel_names())
+DEFAULT_DATASET_FILENAME = f"era5_1995_2020_0p5deg_{DEFAULT_CHANNEL_COUNT}ch.zarr"
+DEFAULT_SAMPLE_FILENAME = f"era5_sample_0p5_{DEFAULT_CHANNEL_COUNT}ch.zarr"
 
 
 @dataclass(frozen=True, slots=True)
 class WeatherBenchDownloadConfig:
-    """Select, conservatively regrid and store an ERA5 state tensor."""
+    """Conservatively regrid and store the fixed 71-channel ERA5 state."""
 
     zarr_url: str = DEFAULT_ZARR_URL
-    surface_variables: tuple[str, ...] = DEFAULT_SURFACE_VARIABLES
-    level_selections: tuple[tuple[str, tuple[int, ...]], ...] = DEFAULT_LEVEL_SELECTIONS
     start_date: str = "1995-01-01"
     # Full, disjoint years for seasonal validation and held-out testing.
     # Training remains 1995-2018; validation 2019; untouched test 2020.
@@ -76,24 +74,9 @@ class WeatherBenchDownloadConfig:
     time_stride_hours: int = 6
     target_resolution_degrees: float = 0.5
     download_batch_days: int = 7
-    output_zarr_path: str = "data/dataset/era5_1995_2020_0p5deg_26ch.zarr"
+    output_zarr_path: str = f"data/dataset/{DEFAULT_DATASET_FILENAME}"
 
     def __post_init__(self) -> None:
-        if not self.surface_variables and not self.level_selections:
-            raise ValueError("at least one channel must be selected")
-        variables = [name for name, _ in self.level_selections]
-        if len(variables) != len(set(variables)):
-            raise ValueError("level variables must not be repeated")
-        for variable, levels in self.level_selections:
-            if not variable or not levels:
-                raise ValueError("each level variable requires at least one level")
-            if len(levels) != len(set(levels)):
-                raise ValueError(f"duplicate pressure level for {variable}")
-            unknown = set(levels) - set(AVAILABLE_PRESSURE_LEVELS)
-            if unknown:
-                raise ValueError(
-                    f"levels not in wb13 for {variable}: {sorted(unknown)}"
-                )
         if self.start_date > self.end_date:
             raise ValueError("start_date must be before or equal to end_date")
         if self.time_stride_hours < 6 or self.time_stride_hours % 6:
@@ -109,7 +92,7 @@ class WeatherBenchDownloadConfig:
 
     @property
     def channel_names(self) -> tuple[str, ...]:
-        return channel_names(self.surface_variables, self.level_selections)
+        return channel_names()
 
     @property
     def channel_count(self) -> int:

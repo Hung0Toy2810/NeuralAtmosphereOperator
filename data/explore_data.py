@@ -16,10 +16,16 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from configs.download_data_config import (
+    AVAILABLE_PRESSURE_LEVELS,
+    DEFAULT_SAMPLE_FILENAME,
     DEFAULT_ZARR_URL,
+    PRESSURE_VARIABLES,
+    SURFACE_VARIABLES,
     WeatherBenchDownloadConfig,
 )
-from data.download_data import build_subset
+from data.download_data import build_state, validate_source_channels
+
+DEFAULT_SAMPLE_PATH = f"data/dataset/{DEFAULT_SAMPLE_FILENAME}"
 
 
 def inspect_remote_store(zarr_url: str = DEFAULT_ZARR_URL) -> None:
@@ -33,35 +39,46 @@ def inspect_remote_store(zarr_url: str = DEFAULT_ZARR_URL) -> None:
         print(f"Levels ({len(levels)}): {list(levels)}")
         print(f"Timesteps: {len(ds.time)} ({str(ds.time.values[0])[:10]} to {str(ds.time.values[-1])[:10]})")
         print(f"Variables ({len(ds.data_vars)}): {sorted(str(k) for k in ds.data_vars)}")
+        config = WeatherBenchDownloadConfig(zarr_url=zarr_url)
+        validate_source_channels(ds)
+        print(f"Fixed SFNO state: {config.channel_count} channels")
+        print(f"Surface variables: {SURFACE_VARIABLES}")
+        print(f"Pressure variables: {PRESSURE_VARIABLES}")
+        print(f"Pressure levels: {AVAILABLE_PRESSURE_LEVELS}")
+        missing_reference = [
+            name for name in ("100m_u_component_of_wind", "100m_v_component_of_wind")
+            if name not in ds.data_vars
+        ]
+        print(f"SFNO reference variables absent from source: {missing_reference}")
     finally:
         ds.close()
 
 
 def download_sample(
-    output_path: str = "data/dataset/era5_sample_0p5_26ch.zarr",
+    output_path: str = DEFAULT_SAMPLE_PATH,
     sample_date: str = "2018-01-01",
 ) -> None:
-    """Download a one-day production-format 26-channel slice."""
+    """Download a one-day slice of the configured production state."""
     config = WeatherBenchDownloadConfig(
         start_date=sample_date,
         end_date=sample_date,
         output_zarr_path=output_path,
     )
-    subset = build_subset(config)
+    state = build_state(config)
 
     out = Path(config.output_zarr_path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    print(f"Writing sample ({config.channel_count} channels, {subset.sizes['time']} timesteps) to {out}")
+    print(f"Writing sample ({config.channel_count} channels, {state.sizes['time']} timesteps) to {out}")
     # xarray accepts filesystem paths here, although some releases expose a
     # narrower StoreLike annotation that omits str.
     try:
-        subset.to_zarr(cast(Any, str(out)), mode="w", consolidated=True)
+        state.to_zarr(cast(Any, str(out)), mode="w", consolidated=True)
     finally:
-        subset.close()
+        state.close()
     print("Download completed.")
 
 
-def inspect_local_zarr(zarr_path: str = "data/dataset/era5_sample_0p5_26ch.zarr") -> None:
+def inspect_local_zarr(zarr_path: str = DEFAULT_SAMPLE_PATH) -> None:
     """Compute and print basic statistics for a local zarr dataset."""
     path = Path(zarr_path)
     if not path.exists():
@@ -92,7 +109,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="WeatherBench2 data exploration utility.")
     parser.add_argument("--remote", action="store_true", help="Inspect remote store metadata")
     parser.add_argument("--download-sample", action="store_true", help="Download 1-day sample slice")
-    parser.add_argument("--local-path", type=str, default="data/dataset/era5_sample_0p5_26ch.zarr", help="Inspect local zarr store")
+    parser.add_argument("--local-path", type=str, default=DEFAULT_SAMPLE_PATH, help="Inspect local zarr store")
     args = parser.parse_args()
 
     if args.remote:

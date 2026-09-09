@@ -26,7 +26,7 @@ def download_case(tmp_path, monkeypatch):
             return xr.Dataset()
         return original_open(path, *args, **kwargs)
 
-    def subset(batch, source):
+    def build_state_stub(batch, source):
         times = np.arange(
             np.datetime64(batch.start_date),
             np.datetime64(batch.end_date) + np.timedelta64(1, "D"),
@@ -39,7 +39,7 @@ def download_case(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(xr, "open_zarr", open_store)
-    monkeypatch.setattr(downloader, "build_subset", subset)
+    monkeypatch.setattr(downloader, "build_state", build_state_stub)
     return config
 
 
@@ -73,9 +73,9 @@ def test_first_batch_interruption_can_restart(download_case, monkeypatch, after_
 def test_incomplete_duplicate_or_reordered_source_is_rejected(
     download_case, monkeypatch, indices
 ):
-    original = downloader.build_subset
+    original = downloader.build_state
     monkeypatch.setattr(
-        downloader, "build_subset", lambda c, s: original(c, s).isel(time=indices)
+        downloader, "build_state", lambda c, s: original(c, s).isel(time=indices)
     )
     with pytest.raises(ValueError, match="timestamps"):
         downloader.main(download_case)

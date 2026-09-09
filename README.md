@@ -1,8 +1,8 @@
 # NeuralAtmosphereOperator
 
 Global 0.5-degree ERA5 forecasting with NVIDIA's Spherical Fourier Neural
-Operator (SFNO). The selected corpus uses twenty-four training years and 26
-prognostic channels; the compact model defaults to SFNO-SC2-L6-E128 with all
+Operator (SFNO). The selected corpus uses twenty-four training years and 71
+prognostic channels; the compact model defaults to SFNO-SC2-L6-E192 with all
 180 modes of its internal 181x360 spherical grid retained.
 
 For the audited environment, install the exact versions in
@@ -14,7 +14,7 @@ parameter-count, checkpoint and rollout tests.
 
 ```text
 data/dataset/
-├── era5_1995_2020_0p5deg_26ch.zarr
+├── era5_1995_2020_0p5deg_71ch.zarr
 └── stats/
     ├── means.npy
     ├── stds.npy
@@ -29,19 +29,20 @@ Download/regrid in restartable seven-day batches, then compute statistics from
 the logical training range only:
 
 ```bash
-python data/test_download_sample.py --output data/dataset/era5_sample_audited.zarr
+python data/test_download_sample.py --output data/dataset/era5_sample_0p5_71ch.zarr
 python data/download_data.py --confirm-full-download
 python scripts/compute_stats.py --time-step 1
 python scripts/validate_data.py --full-scan --output runs/data_validation.json
 python scripts/check_backend.py --device auto
-python scripts/audit_training_readiness.py --sample-zarr data/dataset/era5_sample_audited.zarr
+python scripts/audit_training_readiness.py --sample-zarr data/dataset/era5_sample_0p5_71ch.zarr
 python scripts/benchmark_sample.py --device auto --height 121 --width 240
-python scripts/estimate_vram.py --batch-size 4 --gpu-vram-gib 24
-python scripts/benchmark_model.py --batch-size 4 --rollout-steps 1
+python scripts/estimate_vram.py --batch-size 1 --gpu-vram-gib 32
+python scripts/benchmark_model.py --batch-size 1 --rollout-steps 1
 ```
 
-The downloader fingerprints the source, dates, cadence, resolution and ordered
-channel selection. A legacy `.partial` store or sample created before this
+The downloader fingerprints the source, dates, cadence, resolution and fixed
+71-channel order. It exposes no variable or pressure-level selection. A legacy
+`.partial` store or sample created before this
 contract was introduced must be preserved under another name or regenerated;
 it will not be resumed silently. Flattened stores also carry units and source
 metadata separately for every channel.
@@ -87,40 +88,40 @@ resets patience and `best.pt` preserves the lowest stage-matched validation loss
 ```bash
 # Stage 1: stable one-step objective
 python scripts/train.py \
-  --run-dir runs/sfno_stage1 \
+  --run-dir runs/sfno_k1 \
   --stage-name sfno_1step \
   --rollout-steps 1 \
   --validation-batch-size 1 \
-  --batch-size 4 \
-  --gradient-accumulation 2 \
+  --batch-size 1 \
+  --gradient-accumulation 8 \
   --num-workers 4 --prefetch-factor 2 --no-persistent-workers \
   --no-gradient-checkpointing
 
 # Stage 2: short autoregressive fine-tuning
 python scripts/train.py \
-  --run-dir runs/sfno_stage2 \
+  --run-dir runs/sfno_k2 \
   --stage-name sfno_2step \
-  --init-checkpoint runs/sfno_stage1/checkpoints/best.pt \
+  --init-checkpoint runs/sfno_k1/checkpoints/best.pt \
   --rollout-steps 2 \
   --validation-batch-size 1 \
   --gradient-checkpointing \
-  --batch-size 4 \
-  --gradient-accumulation 2 \
+  --batch-size 1 \
+  --gradient-accumulation 8 \
   --epochs 10 --warmup-epochs 1 --patience 3 \
   --learning-rate 1e-4
 
 # Stage 3: K=4 fine-tuning
 python scripts/train.py \
-  --run-dir runs/sfno_stage3 --stage-name sfno_4step \
-  --init-checkpoint runs/sfno_stage2/checkpoints/best.pt \
+  --run-dir runs/sfno_k4 --stage-name sfno_4step \
+  --init-checkpoint runs/sfno_k2/checkpoints/best.pt \
   --rollout-steps 4 --gradient-checkpointing \
   --epochs 7 --warmup-epochs 0 --patience 3 \
   --learning-rate 5e-5
 
 # Stage 4: K=8 final fine-tuning
 python scripts/train.py \
-  --run-dir runs/sfno_stage4 --stage-name sfno_8step \
-  --init-checkpoint runs/sfno_stage3/checkpoints/best.pt \
+  --run-dir runs/sfno_k8 --stage-name sfno_8step \
+  --init-checkpoint runs/sfno_k4/checkpoints/best.pt \
   --rollout-steps 8 --gradient-checkpointing \
   --epochs 5 --warmup-epochs 0 --patience 3 \
   --learning-rate 2.5e-5
@@ -171,33 +172,35 @@ The optimizer defaults are conservative for a single accelerator (AdamW,
 update-level warmup/cosine decay, accumulation, clipping and BF16). The locked
 compact model uses SC2 to retain 180 spherical modes on the 0.5-degree grid,
 with Makani's instance normalization and Driscoll–Healy operator, 6 layers and
-width 128. Its analytical capacity is 35,793,920 real-scalar degrees of freedom
-(18,099,200 PyTorch tensor elements because the spectral weights are complex).
-An E384/L8 capacity ablation remains available through the corresponding
-training CLI overrides. It retains this project's SC2/26-channel contract and
-must not be described as an exact Makani reproduction. The WB2-native
-26-channel contract preserves
-the key 250-hPa jet level, 50-hPa geopotential, lower-tropospheric moisture and
-total-column water vapour. It is an explicitly documented approximation of
-the paper's compact set because this WB2 archive does not contain 100-m winds.
+width 192. Its capacity is 80,545,152 real-scalar degrees of freedom
+(40,732,032 PyTorch tensor elements because the spectral weights are complex).
+The repository provides no large-model preset: architecture overrides are
+explicit CLI research controls rather than a supported alternative baseline.
+The 71-channel contract includes all five core pressure-level variables
+(u, v, geopotential, temperature and specific humidity) on all 13 WB2 levels,
+plus six surface variables. The source lacks the two 100-m wind components
+from the SFNO 73-channel reference. See [the source verification and channel
+order](docs/DATA_CHANNELS.md). Recreate statistics and use a new run directory;
+26-channel data/statistics and E128 checkpoints cannot initialize this model
+through the current training CLI.
 
 ## Evaluation and inference
 
 ```bash
 python scripts/evaluate.py \
-  --checkpoint runs/sfno_stage4/checkpoints/best.pt \
+  --checkpoint runs/sfno_k8/checkpoints/best.pt \
   --split valid --report-every-days 1
 
 # Final untouched 2020 test year; run only after model selection is frozen.
 python scripts/evaluate.py \
-  --checkpoint runs/sfno_stage4/checkpoints/best.pt \
+  --checkpoint runs/sfno_k8/checkpoints/best.pt \
   --split test --report-every-days 1
 
 python scripts/rollout.py \
-  --checkpoint runs/sfno_stage4/checkpoints/best.pt \
+  --checkpoint runs/sfno_k8/checkpoints/best.pt \
   --rollout-steps 8 --samples 1
 
-python scripts/plot_results.py --run-dir runs/sfno_stage4
+python scripts/plot_results.py --run-dir runs/sfno_k8
 ```
 
 Checkpoints store the model/training configuration, optimizer, update-level

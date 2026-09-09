@@ -5,31 +5,30 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-PILOT_EMBED_DIM = 128
-PILOT_NUM_LAYERS = 6
-MAKANI_REFERENCE_EMBED_DIM = 384
-MAKANI_REFERENCE_NUM_LAYERS = 8
+from configs.download_data_config import DEFAULT_CHANNEL_COUNT
+
+DEFAULT_EMBED_DIM = 192
+DEFAULT_NUM_LAYERS = 6
 
 
 @dataclass(frozen=True, slots=True)
 class AtmosphereModelConfig:
     """Configuration for a residual Spherical Fourier Neural Operator.
 
-    The default is the locked compact SFNO-SC2-L6-E128 adapted to the selected
-    0.5-degree grid. It
-        follows the same SFNO family while reducing statistical capacity and
-        memory for this project's 26-channel, twenty-four-year dataset. It is an
-        adaptation, not an exact reproduction of Makani's SC3/73-channel setup. Residual
-    prediction is applied by the project wrapper, not inside torch-harmonics.
+    The default is SFNO-SC2-L6-E192 adapted to the selected 0.5-degree grid
+    and all 71 channels of the SFNO state available in the WB2 source.
+    It is an adaptation, not an exact reproduction of Makani's SC3/73-channel
+    setup. Residual prediction is applied by the project wrapper, not inside
+    torch-harmonics.
     """
 
     img_size: tuple[int, int] = (361, 720)
-    in_channels: int = 26
-    out_channels: int = 26
+    in_channels: int = DEFAULT_CHANNEL_COUNT
+    out_channels: int = DEFAULT_CHANNEL_COUNT
 
     scale_factor: int = 2
-    embed_dim: int = PILOT_EMBED_DIM
-    num_layers: int = PILOT_NUM_LAYERS
+    embed_dim: int = DEFAULT_EMBED_DIM
+    num_layers: int = DEFAULT_NUM_LAYERS
     activation_function: str = "gelu"
     normalization_layer: str = "instance_norm"
     use_mlp: bool = True
@@ -131,16 +130,3 @@ class AtmosphereModelConfig:
                 not math.isfinite(value) or value <= 0 for value in self.tendency_scale
             ):
                 raise ValueError("tendency_scale values must be finite and positive")
-
-
-def large_e384_l8_ablation_config() -> AtmosphereModelConfig:
-    """Return an E384/L8 capacity ablation while retaining this project's SC2 contract."""
-    return AtmosphereModelConfig(
-        embed_dim=MAKANI_REFERENCE_EMBED_DIM,
-        num_layers=MAKANI_REFERENCE_NUM_LAYERS,
-    )
-
-
-def makani_reference_model_config() -> AtmosphereModelConfig:
-    """Compatibility alias for the E384/L8 ablation; not an exact Makani config."""
-    return large_e384_l8_ablation_config()

@@ -145,29 +145,17 @@ class AtmosphereNormalizer:
             )
         return np.ascontiguousarray(squeezed)
 
-    def _selected_stats(
-        self,
-        channel_count: int,
-        channels: Sequence[int] | np.ndarray | None,
+    def _stats_for_channel_count(
+        self, channel_count: int
     ) -> tuple[np.ndarray, np.ndarray]:
         if self._means_np is None or self._stds_np is None:
             raise ValueError("Statistics are not initialized")
 
-        if channels is None:
-            if self._means_np.size != channel_count:
-                raise ValueError(
-                    f"Expected {self._means_np.size} channels, received {channel_count}"
-                )
-            return self._means_np, self._stds_np
-
-        indices = np.asarray(channels, dtype=np.int64)
-        if indices.ndim != 1 or indices.size != channel_count:
+        if self._means_np.size != channel_count:
             raise ValueError(
-                "channels must be one-dimensional and match values.shape[-3]"
+                f"Expected {self._means_np.size} channels, received {channel_count}"
             )
-        if np.any(indices < 0) or np.any(indices >= self._means_np.size):
-            raise IndexError("channels contains an out-of-range statistics index")
-        return self._means_np[indices], self._stds_np[indices]
+        return self._means_np, self._stds_np
 
     @property
     def means(self) -> np.ndarray | None:
@@ -188,19 +176,14 @@ class AtmosphereNormalizer:
         return means.view(1, -1, 1, 1), stds.view(1, -1, 1, 1)
 
     @overload
-    def normalize(
-        self, values: Tensor, channels: Sequence[int] | np.ndarray | None = None
-    ) -> Tensor: ...
+    def normalize(self, values: Tensor) -> Tensor: ...
 
     @overload
-    def normalize(
-        self, values: np.ndarray, channels: Sequence[int] | np.ndarray | None = None
-    ) -> np.ndarray: ...
+    def normalize(self, values: np.ndarray) -> np.ndarray: ...
 
     def normalize(
         self,
         values: np.ndarray | Tensor,
-        channels: Sequence[int] | np.ndarray | None = None,
     ) -> np.ndarray | Tensor:
         """Apply channel-wise z-score normalization: ``(x - mean) / std``."""
         if (
@@ -212,7 +195,7 @@ class AtmosphereNormalizer:
 
         if values.ndim < 3:
             raise ValueError("values must have shape [..., C, H, W]")
-        means_np, stds_np = self._selected_stats(values.shape[-3], channels)
+        means_np, stds_np = self._stats_for_channel_count(values.shape[-3])
 
         if isinstance(values, Tensor):
             broadcast_shape = (1,) * (values.ndim - 3) + (-1, 1, 1)
@@ -228,19 +211,14 @@ class AtmosphereNormalizer:
         return (val_np - means) / stds
 
     @overload
-    def denormalize(
-        self, values: Tensor, channels: Sequence[int] | np.ndarray | None = None
-    ) -> Tensor: ...
+    def denormalize(self, values: Tensor) -> Tensor: ...
 
     @overload
-    def denormalize(
-        self, values: np.ndarray, channels: Sequence[int] | np.ndarray | None = None
-    ) -> np.ndarray: ...
+    def denormalize(self, values: np.ndarray) -> np.ndarray: ...
 
     def denormalize(
         self,
         values: np.ndarray | Tensor,
-        channels: Sequence[int] | np.ndarray | None = None,
     ) -> np.ndarray | Tensor:
         """Reverse z-score normalization: ``x * std + mean``."""
         if (
@@ -252,7 +230,7 @@ class AtmosphereNormalizer:
 
         if values.ndim < 3:
             raise ValueError("values must have shape [..., C, H, W]")
-        means_np, stds_np = self._selected_stats(values.shape[-3], channels)
+        means_np, stds_np = self._stats_for_channel_count(values.shape[-3])
 
         if isinstance(values, Tensor):
             broadcast_shape = (1,) * (values.ndim - 3) + (-1, 1, 1)

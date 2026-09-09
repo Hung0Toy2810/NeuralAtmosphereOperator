@@ -18,10 +18,7 @@ import numpy as np
 import xarray as xr
 
 from configs.pipeline_config import DataPaths
-from neural_atmosphere_operator.data.loader import (
-    DEFAULT_LEVEL_SPECS,
-    DEFAULT_SURFACE_VARS,
-)
+from configs.download_data_config import channel_names
 from neural_atmosphere_operator.data.normalization import latitude_cell_weights
 from neural_atmosphere_operator.pipeline.runtime import statistics_signature
 
@@ -182,33 +179,19 @@ def main() -> None:
         coords={"latitude": ds.latitude},
     )
     try:
-        if "state" in ds:
-            names = [str(name) for name in ds.channel.values]
-            if "channel_units" not in ds.coords:
-                raise ValueError(
-                    "Flattened state is missing per-channel units; regenerate with the current downloader"
-                )
-            units = [str(unit) for unit in ds.channel_units.values]
-            state = ds["state"]
-        else:
-            selections = [(name, ds[name]) for name in DEFAULT_SURFACE_VARS] + [
-                (f"{name}@{level}hPa", ds[name].sel(level=level, drop=True))
-                for name, levels in DEFAULT_LEVEL_SPECS
-                for level in levels
-            ]
-            names = [name for name, _ in selections]
-            units = [
-                str(
-                    field.attrs.get(
-                        "units", "1" if field.name == "relative_humidity" else ""
-                    )
-                )
-                for _, field in selections
-            ]
-            state = xr.concat(
-                [field for _, field in selections],
-                dim=xr.IndexVariable("channel", names),
+        if "state" not in ds:
+            raise ValueError(
+                "Dataset must contain the canonical flattened 71-channel state"
             )
+        names = [str(name) for name in ds.channel.values]
+        if tuple(names) != channel_names():
+            raise ValueError("Stored state channels do not match the 71-channel contract")
+        if "channel_units" not in ds.coords:
+            raise ValueError(
+                "Flattened state is missing per-channel units; regenerate with the current downloader"
+            )
+        units = [str(unit) for unit in ds.channel_units.values]
+        state = ds["state"]
         if len(units) != len(names) or any(not unit.strip() for unit in units):
             raise ValueError("channel_units must be non-empty and align with channel")
         computed = spherical_channel_statistics(state, latitude_weights, args.time_step)

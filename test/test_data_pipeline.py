@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import sys
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
+import dask.array as da
 import pytest
 import torch
 import xarray as xr
@@ -29,14 +30,90 @@ from neural_atmosphere_operator.data.loader import (
 from data.download_data import (
     _conservative_half_degree,
     _latitude_overlap_weights,
-    build_subset,
+    build_state,
     contract_fingerprint,
     contract_json,
     download_contract,
     validate_resume_contract,
+    validate_source_channels,
 )
-from configs.download_data_config import WeatherBenchDownloadConfig
+from configs.download_data_config import (
+    AVAILABLE_PRESSURE_LEVELS,
+    PRESSURE_VARIABLES,
+    SURFACE_VARIABLES,
+    WeatherBenchDownloadConfig,
+    channel_names,
+)
 from scripts.compute_stats import spherical_channel_statistics
+
+
+@pytest.fixture(scope="module")
+def sample_zarr(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Portable full-grid state fixture with every production channel."""
+    path = tmp_path_factory.mktemp("state71") / "sample.zarr"
+    state = da.broadcast_to(
+        da.from_array(np.arange(4 * 71, dtype=np.float32).reshape(4, 71, 1, 1)),
+        (4, 71, 361, 720),
+    ).rechunk((1, 71, 361, 720))
+    ds = xr.Dataset(
+        {"state": (("time", "channel", "latitude", "longitude"), state)},
+        coords={
+            "time": np.datetime64("2018-01-01", "h") + np.arange(4) * np.timedelta64(6, "h"),
+            "channel": list(channel_names()),
+            "latitude": np.linspace(90.0, -90.0, 361),
+            "longitude": np.arange(720) * 0.5,
+        },
+    )
+    ds.to_zarr(cast(Any, str(path)), mode="w", consolidated=True)
+    ds.close()
+    return path
+
+
+def test_fixed_sfno_source_contract_and_channel_order():
+    config = WeatherBenchDownloadConfig()
+    download_fields = {field.name for field in fields(WeatherBenchDownloadConfig)}
+    dataset_fields = {field.name for field in fields(AtmosphereDatasetConfig)}
+    assert "surface_variables" not in download_fields | dataset_fields
+    assert "level_selections" not in download_fields | dataset_fields
+    assert AVAILABLE_PRESSURE_LEVELS == (
+        50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000
+    )
+    assert PRESSURE_VARIABLES == (
+        "u_component_of_wind",
+        "v_component_of_wind",
+        "geopotential",
+        "temperature",
+        "specific_humidity",
+    )
+    assert config.channel_count == 71
+    assert config.channel_names[6:] == tuple(
+        f"{name}@{level}hPa"
+        for name in PRESSURE_VARIABLES
+        for level in AVAILABLE_PRESSURE_LEVELS
+    )
+    assert len(set(config.channel_names)) == 71
+    source = xr.Dataset(
+        {
+            **{
+                name: (("time", "latitude", "longitude"), np.zeros((1, 1, 1)))
+                for name in SURFACE_VARIABLES
+            },
+            **{
+                name: (("time", "level", "latitude", "longitude"), np.zeros((1, 13, 1, 1)))
+                for name in PRESSURE_VARIABLES
+            },
+        },
+        coords={"level": list(AVAILABLE_PRESSURE_LEVELS)},
+    )
+    validate_source_channels(source)
+    with pytest.raises(ValueError, match="missing requested variables.*specific_humidity"):
+        validate_source_channels(source.drop_vars("specific_humidity"))
+    with pytest.raises(ValueError, match="missing pressure levels.*925"):
+        validate_source_channels(
+            source.sel(level=[p for p in AVAILABLE_PRESSURE_LEVELS if p != 925])
+        )
+    with pytest.raises(ValueError, match="Unexpected source dimensions"):
+        validate_source_channels(source.isel(time=0, drop=True))
 
 
 def test_half_degree_regrid_preserves_constants_and_global_integral():
@@ -94,7 +171,7 @@ def test_download_contract_fingerprint_covers_semantic_configuration():
     config = WeatherBenchDownloadConfig()
     assert config.start_date == "1995-01-01"
     assert config.end_date == "2020-12-31"
-    assert config.output_zarr_path.endswith("era5_1995_2020_0p5deg_26ch.zarr")
+    assert config.output_zarr_path.endswith("era5_1995_2020_0p5deg_71ch.zarr")
     fingerprint = contract_fingerprint(download_contract(config))
     assert len(fingerprint) == 64
     assert contract_fingerprint(download_contract(config)) == fingerprint
@@ -115,65 +192,65 @@ def test_download_contract_fingerprint_covers_semantic_configuration():
         validate_resume_contract(
             progress, attrs, replace(config, end_date="2019-02-17")
         )
-    assert (
-        contract_fingerprint(
-            download_contract(
-                replace(config, surface_variables=config.surface_variables[:-1])
-            )
-        )
-        != fingerprint
-    )
+    assert "surface_variables" in download_contract(config)
+    assert "pressure_variables" in download_contract(config)
+    assert "pressure_levels" in download_contract(config)
+    assert download_contract(config)["schema_version"] == 2
 
 
 def test_flattened_state_keeps_per_channel_metadata(tmp_path: Path):
     latitude = np.linspace(90.0, -90.0, 721)
     longitude = np.arange(1440, dtype=np.float64) * 0.25
-    shape = (1, 721, 1440)
+    surface_shape = (1, 721, 1440)
+    pressure_shape = (1, 13, 721, 1440)
     source = xr.Dataset(
         {
-            "10m_u_component_of_wind": xr.DataArray(
-                np.zeros(shape, dtype=np.float32),
-                dims=("time", "latitude", "longitude"),
-                attrs={"units": "m s**-1", "long_name": "10 metre U wind"},
-            ),
-            "2m_temperature": xr.DataArray(
-                np.ones(shape, dtype=np.float32),
-                dims=("time", "latitude", "longitude"),
-                attrs={"units": "K", "long_name": "2 metre temperature"},
-            ),
+            **{
+                name: xr.DataArray(
+                    da.zeros(surface_shape, chunks=surface_shape, dtype=np.float32),
+                    dims=("time", "latitude", "longitude"),
+                    attrs={"units": "unit", "long_name": name},
+                )
+                for name in SURFACE_VARIABLES
+            },
+            **{
+                name: xr.DataArray(
+                    da.zeros(pressure_shape, chunks=pressure_shape, dtype=np.float32),
+                    dims=("time", "level", "latitude", "longitude"),
+                    attrs={"units": "unit", "long_name": name},
+                )
+                for name in PRESSURE_VARIABLES
+            },
         },
         coords={
             "time": np.asarray(["2019-01-01T00"], dtype="datetime64[h]"),
+            "level": list(AVAILABLE_PRESSURE_LEVELS),
             "latitude": latitude,
             "longitude": longitude,
         },
     )
     config = replace(
         WeatherBenchDownloadConfig(),
-        surface_variables=("10m_u_component_of_wind", "2m_temperature"),
-        level_selections=(),
         start_date="2019-01-01",
         end_date="2019-01-01",
     )
-    subset = build_subset(config, source)
-    assert tuple(str(value) for value in subset.channel_units.values) == (
-        "m s**-1",
-        "K",
+    state = build_state(config, source)
+    assert tuple(str(value) for value in state.channel.values) == channel_names()
+    assert tuple(str(value) for value in state.channel_units.values) == ("unit",) * 71
+    assert (
+        tuple(str(value) for value in state.channel_source_variable.values[:6])
+        == SURFACE_VARIABLES
     )
-    assert tuple(str(value) for value in subset.channel_source_variable.values) == (
-        "10m_u_component_of_wind",
-        "2m_temperature",
-    )
-    assert "units" not in subset.state.attrs
-    assert subset.attrs["channel_metadata_version"] == 1
+    assert "units" not in state.state.attrs
+    assert state.attrs["channel_metadata_version"] == 1
     path = tmp_path / "metadata.zarr"
-    subset.to_zarr(cast(Any, str(path)), mode="w", consolidated=True)
+    state.to_zarr(cast(Any, str(path)), mode="w", consolidated=True)
     reopened = xr.open_zarr(path, consolidated=True)
     try:
+        assert tuple(str(value) for value in reopened.channel.values) == channel_names()
         assert tuple(str(value) for value in reopened.channel_units.values) == (
-            "m s**-1",
-            "K",
-        )
+            "unit",
+        ) * 71
         assert "units" not in reopened.state.attrs
     finally:
         reopened.close()
@@ -255,16 +332,16 @@ def test_vectorized_channel_statistics_match_direct_weighted_reductions():
     )
 
 
-def test_normalizer_validates_statistics_and_channel_selection():
+def test_normalizer_validates_statistics_and_channel_contract():
     with pytest.raises(ValueError, match="same number"):
         AtmosphereNormalizer(np.zeros(2), np.ones(3))
     with pytest.raises(ValueError, match="strictly positive"):
         AtmosphereNormalizer(np.zeros(2), np.array([1.0, -1.0]))
 
     normalizer = AtmosphereNormalizer(np.array([10.0, 20.0]), np.array([2.0, 5.0]))
-    values = np.full((1, 2, 2), 25.0, dtype=np.float32)
-    transformed = normalizer.normalize(values, channels=(1,))
-    np.testing.assert_allclose(transformed, 1.0)
+    values = np.full((1, 1, 2, 2), 25.0, dtype=np.float32)
+    with pytest.raises(ValueError, match="Expected 2 channels"):
+        normalizer.normalize(values)
 
 
 def test_latitude_weights():
@@ -283,14 +360,11 @@ def test_latitude_weights():
     assert weights_torch[0] > 0.0
 
 
-def test_atmosphere_zarr_dataset():
-    sample_zarr = project_root / "data" / "dataset" / "era5_sample_0p5_26ch.zarr"
-    if not sample_zarr.exists():
-        pytest.skip("Sample dataset not found, skipping dataset test")
+def test_atmosphere_zarr_dataset(sample_zarr: Path):
 
     # Mock statistics
-    means = np.zeros((26,), dtype=np.float32)
-    stds = np.ones((26,), dtype=np.float32)
+    means = np.zeros((71,), dtype=np.float32)
+    stds = np.ones((71,), dtype=np.float32)
 
     config = AtmosphereDatasetConfig(
         data_path=sample_zarr,
@@ -310,14 +384,14 @@ def test_atmosphere_zarr_dataset():
     assert "target" in sample
     assert "time_index" in sample
 
-    assert sample["input"].shape == (26, 361, 720)
-    assert sample["target"].shape == (1, 26, 361, 720)
+    assert sample["input"].shape == (71, 361, 720)
+    assert sample["target"].shape == (1, 71, 361, 720)
 
     # Test DataLoader
     loader = create_data_loader(dataset, batch_size=1, shuffle=False, num_workers=0)
     for batch in loader:
-        assert batch["input"].shape == (1, 26, 361, 720)
-        assert batch["target"].shape == (1, 1, 26, 361, 720)
+        assert batch["input"].shape == (1, 71, 361, 720)
+        assert batch["target"].shape == (1, 1, 71, 361, 720)
         break
 
 
@@ -325,7 +399,7 @@ def test_loader_rejects_legacy_weatherbench_regridding(tmp_path: Path):
     path = tmp_path / "legacy.zarr"
     times = np.asarray(["2018-01-01T00", "2018-01-01T06"], dtype="datetime64[h]")
     state = xr.DataArray(
-        np.zeros((2, 26, 3, 4), dtype=np.float32),
+        np.zeros((2, 71, 3, 4), dtype=np.float32),
         dims=("time", "channel", "latitude", "longitude"),
         coords={
             "time": times,
@@ -346,13 +420,10 @@ def test_loader_rejects_legacy_weatherbench_regridding(tmp_path: Path):
         )
 
 
-def test_multistep_rollout_dataset():
-    sample_zarr = project_root / "data" / "dataset" / "era5_sample_0p5_26ch.zarr"
-    if not sample_zarr.exists():
-        pytest.skip("Sample dataset not found, skipping dataset test")
+def test_multistep_rollout_dataset(sample_zarr: Path):
 
-    means = np.zeros((26,), dtype=np.float32)
-    stds = np.ones((26,), dtype=np.float32)
+    means = np.zeros((71,), dtype=np.float32)
+    stds = np.ones((71,), dtype=np.float32)
 
     config = AtmosphereDatasetConfig(
         data_path=sample_zarr,
@@ -368,14 +439,11 @@ def test_multistep_rollout_dataset():
     assert len(dataset) >= 1
 
     sample = dataset[0]
-    assert sample["input"].shape == (52, 361, 720)
-    assert sample["target"].shape == (2, 26, 361, 720)
+    assert sample["input"].shape == (142, 361, 720)
+    assert sample["target"].shape == (2, 71, 361, 720)
 
 
-def test_spatial_crop_exposes_matching_coordinates():
-    sample_zarr = project_root / "data" / "dataset" / "era5_sample_0p5_26ch.zarr"
-    if not sample_zarr.exists():
-        pytest.skip("Sample dataset not found, skipping dataset test")
+def test_spatial_crop_exposes_matching_coordinates(sample_zarr: Path):
 
     config = AtmosphereDatasetConfig(
         data_path=sample_zarr,
@@ -388,10 +456,7 @@ def test_spatial_crop_exposes_matching_coordinates():
     assert dataset.longitudes.shape == (64,)
 
 
-def test_training_noise_only_changes_input_and_workers_are_restartable():
-    sample_zarr = project_root / "data" / "dataset" / "era5_sample_0p5_26ch.zarr"
-    if not sample_zarr.exists():
-        pytest.skip("Sample dataset not found, skipping dataset test")
+def test_training_noise_only_changes_input_and_workers_are_restartable(sample_zarr: Path):
     config = AtmosphereDatasetConfig(
         data_path=sample_zarr,
         normalize=False,
@@ -410,10 +475,7 @@ def test_training_noise_only_changes_input_and_workers_are_restartable():
     dataset.close()
 
 
-def test_loader_exposes_asynchronous_prefetch_controls():
-    sample_zarr = project_root / "data" / "dataset" / "era5_sample_0p5_26ch.zarr"
-    if not sample_zarr.exists():
-        pytest.skip("Sample dataset not found, skipping dataset test")
+def test_loader_exposes_asynchronous_prefetch_controls(sample_zarr: Path):
     dataset = AtmosphereZarrDataset(
         AtmosphereDatasetConfig(
             data_path=sample_zarr,
@@ -431,7 +493,7 @@ def test_loader_exposes_asynchronous_prefetch_controls():
     assert loader.prefetch_factor == 3
     assert loader.persistent_workers is True
     batch = next(iter(loader))
-    assert batch["input"].shape == (1, 26, 13, 24)
+    assert batch["input"].shape == (1, 71, 13, 24)
     del loader
     dataset.close()
 

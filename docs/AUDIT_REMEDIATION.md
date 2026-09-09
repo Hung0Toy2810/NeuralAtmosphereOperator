@@ -4,6 +4,11 @@ Báo cáo gốc trong `audit/2026-09-06/` mô tả commit trước sửa và đ�
 Bảng này theo dõi cả 22 mục theo mức độ. “Đã sửa” nghĩa là lỗi implementation
 đã có biện pháp và regression tương ứng; không có nghĩa đã chứng minh forecast skill.
 
+> **Trạng thái cấu hình hiện hành (2026-09-09):** project đã chuyển sang
+> contract cố định 71 kênh và SFNO-SC2-L6-E192. Mọi phép đo E128/26 kênh bên
+> dưới là bằng chứng lịch sử của đợt remediation trước, không phải benchmark
+> capacity, VRAM hay stability của baseline hiện tại.
+
 ## Critical và High
 
 | ID | Trạng thái | Thay đổi / điều kiện còn lại |
@@ -23,17 +28,17 @@ Bảng này theo dõi cả 22 mục theo mức độ. “Đã sửa” nghĩa l�
 | ID | Trạng thái | Thay đổi / điều kiện còn lại |
 |---|---|---|
 | M01 | Đã sửa | Weighted vector norm cho zero subgradient hữu hạn ở perfect prediction và zero target; không thay objective bằng smoothing tùy ý. |
-| M02 | Đã sửa | State xác minh exact set dimensions và transpose theo tên trước khi đọc; legacy surface/level fields cũng canonical transpose. Test store đổi thứ tự axes so đúng giá trị, không chỉ shape. |
+| M02 | Đã sửa | State xác minh exact set dimensions và transpose theo tên trước khi đọc. Loader hiện hành chỉ nhận flattened state đúng contract 71 kênh và từ chối representation surface/level cũ. Test store đổi thứ tự axes so đúng giá trị, không chỉ shape. |
 | M03 | Đã tăng cường; cross-hardware còn mở | Runtime lưu packages, operator source hash, flags, driver/hardware/thread count; wheel layout hash đúng package. Data inventory phát hiện chunk edits dù metadata không đổi. Full scan là content check; exact CUDA continuation vẫn phải chứng minh trên target machine. |
 | M04 | Đã chặn cấu hình sai | `use_complex_kernels=False` bị từ chối với backend 0.7.4 thay vì cho chạy một ablation giả. Real kernels cần implementation và retraining riêng. |
 | M05 | Đã chặn tổ hợp không an toàn | SC1 khác input/internal grid, L1+LayerNorm và zero retained modes fail ngay ở config. Default SC2/L6 giữ nguyên. |
-| M06 | Đã sửa constant leakage; near-constant/CUDA còn mở | Full E128/L6 CPU: constant output spatial std 2.2109→0 nhờ anchored centering và analytical degree-zero SHT. Formula/gradcheck pass; random-field output RMS difference 2.9e−6. Không đổi epsilon/parameters. Near-constant sensitivity của IN vẫn còn; preflight/real pilot cần kiểm. |
+| M06 | Đã sửa constant leakage; E192/CUDA còn mở | Phép đo lịch sử full E128/L6 CPU: constant output spatial std 2.2109→0 nhờ anchored centering và analytical degree-zero SHT. Formula/gradcheck pass; random-field output RMS difference 2.9e−6. Không đổi epsilon/parameters. Baseline E192/71 kênh vẫn cần preflight và real-data pilot trên GPU đích. |
 | M07 | Đã sửa các bottleneck được xác định | Lazy targets đọc từng lead ở validation/evaluation/export; CPU/device truth buffers không tăng theo K. Cache area weights, validate channel weights một lần, metric reductions giữ trên device. Throughput và target prefetch cần CUDA profiler trước bước tối ưu tiếp. |
 | M08 | Đã sửa | Reject max_samples<=0 và empty metrics; reject non-finite fields/reductions. Metadata có hashes/precision/actual initializations/overrides. Không ghi đè evaluation đã hoàn tất; không giữ milestones từ run mới không yêu cầu. |
 | M09 | Đã đồng nhất measure | In-memory normalizer helper dùng spherical area như CLI và nhận latitude rõ ràng; doc nói helper không tạo provenance bundle để train. |
 | M10 | Đã sửa | Sample benchmark đòi để lại ít nhất một transition ngoài train; batch3 với T4 bị từ chối ở CLI và API. Sample vẫn chỉ là timing/overfit diagnostic. |
 | M11 | Đã sửa | Downloader từ chối stride không chia hết duration của batch, tránh phase reset. Default 6h/7day giữ nguyên. |
-| L01 | Đã tái tạo sample mới; giữ nguyên dữ liệu cũ | Đã tải sample ERA5 26 channels/4 states (~73MiB) tại `era5_sample_audited.zarr`, đủ units và finite. Kiểm existence trước remote access. Readiness thêm 24-year comparison; notebook cập nhật total corpus 1995–2020. Sample thiếu units không được sửa bằng cách đoán metadata. |
+| L01 | Sample lịch sử đã xác minh; cần sample 71 kênh | Sample ERA5 26 kênh/4 states (~73MiB) tại `era5_sample_audited.zarr` là artifact của audit cũ và không tương thích với pipeline hiện hành. Downloader/readiness mặc định nay dùng tên mới 71 kênh; cần tạo sample này trước preflight. |
 | L02 | Đã sửa phần ảnh hưởng vận hành | Plot phân biệt train objective và validation selection; archive ledger/stale validation khi resume checkpoint cũ. Public model rollout dùng chung generator, discount range thống nhất, bỏ dead handle. Parameter count vẫn là allocated components, không claim identifiable degrees of freedom. |
 
 ## Kiểm chứng và giới hạn
@@ -51,20 +56,21 @@ workspace này. Không chạy full corpus hoặc long GPU training; không báo 
 như VRAM đã đo. [Runbook GPU](GPU_TRAINING.md) nêu lệnh cần chạy trên GPU trước
 khi dùng baseline dài hạn.
 
-Không đổi dataset channels, loss priorities hoặc số SFNO parameters. Numerical SHT path
-đã thay đổi để giữ trường hằng; đây không phải exact reproduction của arithmetic upstream.
-Statistics v4 cần tính lại; checkpoint cũ thiếu forecast contract không được tự nâng
-cấp bằng phỏng đoán. Không coi experiment cũ từng dùng sai grid/cadence/held-out
-như kết quả nghiên cứu hợp lệ sau khi chỉ sửa code.
+Trong đợt remediation gốc, dataset channels và số SFNO parameters chưa thay đổi.
+Sau đó project đã chuyển riêng sang contract 71 kênh, objective
+standardized-tendency và E192–L6. Numerical SHT path giữ trường hằng vẫn được
+duy trì; đây không phải exact reproduction của arithmetic upstream. Statistics
+phải tính lại cho đúng state 71 kênh; checkpoint cũ thiếu forecast contract hoặc
+dùng E128/26 kênh không được tự nâng cấp bằng phỏng đoán.
 
-## Kết quả chốt tại workspace
+## Kết quả của đợt audit gốc (lịch sử)
 
 - **67 tests pass**; Pyright/Pylance kiểm 42 file với **0 errors, 0 warnings**;
   Ruff F checks và `git diff --check` pass.
 - MPS forward/backward pass; chỉ có cảnh báo padding performance của dependency.
-- Full E128/L6, 361×720 CPU: constant spatial std **2.2109 → 0**; zero input vẫn zero. Near-constant perturbation 1e−5 vẫn cho output spatial std khoảng **2.3198**; đây là giới hạn cần đo trên dữ liệu thật/GPU đích, chưa gọi là đã stable.
+- Phép đo lịch sử full E128/L6, 361×720 CPU: constant spatial std **2.2109 → 0**; zero input vẫn zero. Near-constant perturbation 1e−5 vẫn cho output spatial std khoảng **2.3198**; không suy rộng con số này cho E192/71 kênh.
 - Pilot ERA5 thật dùng E8/L2, full grid, train 00→06 UTC và validation 12→18 UTC cùng 2018-01-01. Statistics chỉ từ hai training states. Sau **12 updates**, train loss **16.7129 → 11.6838**, validation loss **16.9253 → 12.0285**, không non-finite gradients. Hai periods cùng ngày tương quan mạnh: không phải forecast-skill evidence.
-- Chưa tải corpus 1995–2020; chưa có measurements trên GPU đích hoặc long-run checkpoint E128. Không tự khởi chạy long training.
+- Chưa tải corpus 71 kênh 1995–2020; chưa có measurements E192 trên GPU đích hoặc long-run checkpoint hiện hành.
 
 Bằng chứng: [pytest](../audit/remediation/pytest.txt),
 [MPS](../audit/remediation/backend_mps.txt),
@@ -72,3 +78,16 @@ Bằng chứng: [pytest](../audit/remediation/pytest.txt),
 [full-grid sau sửa](../audit/remediation/fullgrid_conditioning_after_cpu.json),
 [pilot dữ liệu thật](../audit/remediation/real_sample_probe.json).
 Các harness trong cùng thư mục cho phép lặp lại conditioning/pilot.
+
+## Kiểm chứng baseline hiện hành
+
+- Runtime defaults: contract cố định 71 kênh, SC2–L6–E192, microbatch 1,
+  accumulation 8 và K=1.
+- **77 tests pass**; Pyright/Pylance kiểm cả `audit/remediation` với
+  **0 errors, 0 warnings**; Ruff F checks trên các file vừa sửa và
+  `git diff --check` đều pass.
+- Benchmark sample mặc định chỉ chạy E192–L6. Các width khác vẫn có thể truyền
+  tường minh để làm thí nghiệm, nhưng không còn là preset mặc định.
+- Hai remediation harness đang chạy theo channel count/path từ config hiện hành.
+  Snapshot và output trong `audit/2026-09-06/` cùng các JSON cũ vẫn được giữ
+  nguyên để bảo toàn bằng chứng lịch sử.

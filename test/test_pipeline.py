@@ -60,7 +60,7 @@ def test_warmup_cosine_schedule_hits_boundaries() -> None:
 
 def test_validation_and_test_cover_disjoint_full_years() -> None:
     paths = DataPaths()
-    assert paths.dataset.name == "era5_1995_2020_0p5deg_26ch.zarr"
+    assert paths.dataset.name == "era5_1995_2020_0p5deg_71ch.zarr"
     assert paths.split_time_range("train") == ("1995-01-01", "2018-12-31")
     assert paths.split_time_range("valid") == ("2019-01-01", "2019-12-31")
     assert paths.split_time_range("test") == ("2020-01-01", "2020-12-31")

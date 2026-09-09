@@ -15,17 +15,9 @@ from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 
 from .normalization import AtmosphereNormalizer
-from configs.download_data_config import (
-    DEFAULT_LEVEL_SELECTIONS,
-    DEFAULT_SURFACE_VARIABLES,
-    channel_names as configured_channel_names,
-)
+from configs.download_data_config import channel_names as configured_channel_names
 
 LOGGER = logging.getLogger(__name__)
-
-DEFAULT_SURFACE_VARS = DEFAULT_SURFACE_VARIABLES
-DEFAULT_LEVEL_SPECS = DEFAULT_LEVEL_SELECTIONS
-
 
 class AtmosphereSample(TypedDict):
     """Standard training sample contract for atmospheric forecasting models."""
@@ -43,8 +35,6 @@ class AtmosphereDatasetConfig:
     data_path: str | Path
     means_path: str | Path | np.ndarray | Tensor | None = None
     stds_path: str | Path | np.ndarray | Tensor | None = None
-    surface_variables: tuple[str, ...] = DEFAULT_SURFACE_VARS
-    level_selections: tuple[tuple[str, tuple[int, ...]], ...] = DEFAULT_LEVEL_SPECS
     start_time: str | None = None
     end_time: str | None = None
     history: int = 0
@@ -70,10 +60,6 @@ class AtmosphereDatasetConfig:
             raise ValueError("rollout_steps must be at least 1")
         if self.time_step < 1:
             raise ValueError("time_step must be at least 1")
-        if not self.surface_variables and not self.level_selections:
-            raise ValueError("At least one variable must be specified")
-        if any(not levels for _, levels in self.level_selections):
-            raise ValueError("Every level variable requires selected pressure levels")
         if self.start_time and self.end_time and self.start_time > self.end_time:
             raise ValueError("start_time must not be later than end_time")
         if self.add_noise and self.noise_std <= 0:
@@ -85,7 +71,7 @@ class AtmosphereDatasetConfig:
 
     @property
     def channel_names(self) -> tuple[str, ...]:
-        return configured_channel_names(self.surface_variables, self.level_selections)
+        return configured_channel_names()
 
 
 class AtmosphereZarrDataset(Dataset[AtmosphereSample]):
@@ -124,85 +110,47 @@ class AtmosphereZarrDataset(Dataset[AtmosphereSample]):
             xr.open_zarr(str(self.data_path), consolidated=True)
         )
         try:
-            if "state" in ds:
-                if set(ds.state.dims) != {"time", "channel", "latitude", "longitude"}:
-                    raise ValueError(
-                        "state dimensions must be time/channel/latitude/longitude"
-                    )
-                stored_channels = tuple(str(value) for value in ds.channel.values)
-                if stored_channels != self.config.channel_names:
-                    raise ValueError(
-                        "Stored state channels do not match configured channels"
-                    )
-                self.channel_units = self._string_channel_coordinate(
-                    ds, "channel_units", stored_channels, fallback=""
+            if "state" not in ds:
+                raise ValueError(
+                    "Dataset must contain the canonical flattened 71-channel state"
                 )
-                self.channel_long_names = self._string_channel_coordinate(
-                    ds, "channel_long_name", stored_channels, fallback=""
+            if set(ds.state.dims) != {"time", "channel", "latitude", "longitude"}:
+                raise ValueError(
+                    "state dimensions must be time/channel/latitude/longitude"
                 )
-                self.channel_source_variables = self._string_channel_coordinate(
-                    ds, "channel_source_variable", stored_channels, fallback=""
+            stored_channels = tuple(str(value) for value in ds.channel.values)
+            if stored_channels != self.config.channel_names:
+                raise ValueError("Stored state channels do not match the 71-channel contract")
+            self.channel_units = self._string_channel_coordinate(
+                ds, "channel_units", stored_channels, fallback=""
+            )
+            self.channel_long_names = self._string_channel_coordinate(
+                ds, "channel_long_name", stored_channels, fallback=""
+            )
+            self.channel_source_variables = self._string_channel_coordinate(
+                ds, "channel_source_variable", stored_channels, fallback=""
+            )
+            if "channel_pressure_level_hpa" in ds.coords:
+                pressure_levels = np.asarray(
+                    ds["channel_pressure_level_hpa"].values, dtype=np.float32
                 )
-                if "channel_pressure_level_hpa" in ds.coords:
-                    pressure_levels = np.asarray(
-                        ds["channel_pressure_level_hpa"].values, dtype=np.float32
-                    )
-                    if pressure_levels.shape != (len(stored_channels),):
-                        raise ValueError(
-                            "channel_pressure_level_hpa must align with channel"
-                        )
-                    self.channel_pressure_levels_hpa = tuple(
-                        float(value) for value in pressure_levels
-                    )
-                else:
-                    self.channel_pressure_levels_hpa = (float("nan"),) * len(
-                        stored_channels
-                    )
-                source = str(ds.attrs.get("source", ""))
-                if (
-                    source.startswith("gs://weatherbench2/")
-                    and int(ds.attrs.get("regridding_version", -1)) != 2
-                ):
-                    raise ValueError(
-                        "WeatherBench2 state store uses an unaudited regridding "
-                        "version; regenerate it with the current downloader"
-                    )
-                self._state_layout = True
-            else:
-                required_variables = self.config.surface_variables + tuple(
-                    variable for variable, _ in self.config.level_selections
-                )
-                missing_variables = [
-                    name for name in required_variables if name not in ds
-                ]
-                if missing_variables:
-                    raise ValueError(
-                        f"Dataset is missing variables: {missing_variables}"
-                    )
-                self._state_layout = False
-                metadata = [(name, None) for name in self.config.surface_variables] + [
-                    (variable, level)
-                    for variable, levels in self.config.level_selections
-                    for level in levels
-                ]
-                self.channel_units = tuple(
-                    str(
-                        ds[variable].attrs.get(
-                            "units", "1" if variable == "relative_humidity" else ""
-                        )
-                    )
-                    for variable, _ in metadata
-                )
-                self.channel_long_names = tuple(
-                    str(ds[variable].attrs.get("long_name", variable))
-                    for variable, _ in metadata
-                )
-                self.channel_source_variables = tuple(
-                    variable for variable, _ in metadata
-                )
+                if pressure_levels.shape != (len(stored_channels),):
+                    raise ValueError("channel_pressure_level_hpa must align with channel")
                 self.channel_pressure_levels_hpa = tuple(
-                    float("nan") if level is None else float(level)
-                    for _, level in metadata
+                    float(value) for value in pressure_levels
+                )
+            else:
+                self.channel_pressure_levels_hpa = (float("nan"),) * len(
+                    stored_channels
+                )
+            source = str(ds.attrs.get("source", ""))
+            if (
+                source.startswith("gs://weatherbench2/")
+                and int(ds.attrs.get("regridding_version", -1)) != 2
+            ):
+                raise ValueError(
+                    "WeatherBench2 state store uses an unaudited regridding "
+                    "version; regenerate it with the current downloader"
                 )
             for coordinate in ("time", "latitude", "longitude"):
                 if coordinate not in ds.coords:
@@ -258,15 +206,6 @@ class AtmosphereZarrDataset(Dataset[AtmosphereSample]):
             ):
                 raise ValueError("SFNO requires regularly spaced longitudes")
 
-            if not self._state_layout and self.config.level_selections:
-                available_levels = list(ds.level.values) if "level" in ds else []
-                for variable, levels in self.config.level_selections:
-                    for level in levels:
-                        if level not in available_levels:
-                            raise ValueError(
-                                f"Level {level} hPa for {variable} not present in "
-                                f"dataset levels {available_levels}"
-                            )
         finally:
             ds.close()
 
@@ -362,49 +301,18 @@ class AtmosphereZarrDataset(Dataset[AtmosphereSample]):
         return self.sample_count
 
     def _read_timestep_channels(self, ds: xr.Dataset, t_idx: int) -> np.ndarray:
-        """Extract all 2D and 3D variables at timestep t_idx as [C, H, W]."""
+        """Extract the canonical state at timestep ``t_idx`` as ``[C,H,W]``."""
         h, w = self.spatial_shape
-        if self._state_layout:
-            return np.asarray(
-                ds["state"]
-                .transpose("time", "channel", "latitude", "longitude")
-                .isel(
-                    time=t_idx,
-                    latitude=slice(0, h),
-                    longitude=slice(0, w),
-                ),
-                dtype=np.float32,
-            )
-        channel_slices: list[np.ndarray] = []
-
-        # 1. Surface variables: [1, H, W]
-        for var in self.config.surface_variables:
-            arr = np.asarray(
-                ds[var]
-                .transpose("time", "latitude", "longitude")
-                .isel(time=t_idx)[:h, :w],
-                dtype=np.float32,
-            )
-            channel_slices.append(arr[None, ...])
-
-        # 2. Upper-air variables: [len(levels), H, W]. WeatherBench/Zarr
-        # stores the levels of one variable in the same chunk; loading them
-        # together avoids repeatedly fetching and decompressing that chunk.
-        for var, levels in self.config.level_selections:
-            arr = np.asarray(
-                ds[var]
-                .transpose("time", "level", "latitude", "longitude")
-                .sel(level=list(levels))
-                .isel(
-                    time=t_idx,
-                    latitude=slice(0, h),
-                    longitude=slice(0, w),
-                ),
-                dtype=np.float32,
-            )
-            channel_slices.append(arr)
-
-        return np.concatenate(channel_slices, axis=0)  # [C, H, W]
+        return np.asarray(
+            ds["state"]
+            .transpose("time", "channel", "latitude", "longitude")
+            .isel(
+                time=t_idx,
+                latitude=slice(0, h),
+                longitude=slice(0, w),
+            ),
+            dtype=np.float32,
+        )
 
     def __getitem__(self, index: int) -> AtmosphereSample:
         if index < 0:

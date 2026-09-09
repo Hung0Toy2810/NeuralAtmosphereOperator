@@ -1,6 +1,6 @@
 # Chuẩn bị training trên GPU CUDA
 
-Bản sửa giữ SFNO-SC2-L6-E128, 26 channels, 361×720 và bước dự báo 6 giờ.
+Cấu hình hiện tại là SFNO-SC2-L6-E192, 71 channels, 361×720 và bước dự báo 6 giờ.
 Cấu hình khởi đầu dưới đây dành cho **một GPU**, batch 1 × accumulation 8.
 Đây là lựa chọn thận trọng để đo trước; chưa phải cam kết về VRAM hoặc throughput.
 GPU cụ thể được chọn sau khi đo VRAM và throughput bằng preflight; cấu hình không gắn với một model GPU.
@@ -34,19 +34,26 @@ hoặc gặp operation chưa hỗ trợ; seed không tự bảo đảm bitwise e
 
 ## 2. Dữ liệu và statistics
 
+Đã xác minh nguồn có **71/73 kênh SFNO**: thiếu u/v ở độ cao 100 m.
+Dùng đủ 13 tầng cho u, v, z, T, q; xem [đối chiếu nguồn](DATA_CHANNELS.md).
+Danh sách biến/tầng đã được khóa trong source code, không còn tùy chọn tạo
+channel subset. Downloader chỉ regrid đủ state này từ 0,25° xuống 0,5°.
+Checkpoint E128/26 kênh không dùng được qua `--resume` hoặc `--init-checkpoint`
+với E192/71 kênh. Cần run mới và statistics mới.
+
 Protocol mới: train **1995–2018**, validation **2019**, test **2020**.
-Store mặc định là `data/dataset/era5_1995_2020_0p5deg_26ch.zarr`.
-Store cũ kết thúc tháng 2/2019 thiếu phần held-out cần thiết. Không đổi tên store cũ
+Store mặc định là `data/dataset/era5_1995_2020_0p5deg_71ch.zarr`.
+Store 26 kênh cũ không khớp channel contract; store kết thúc tháng 2/2019 còn thiếu held-out. Không đổi tên store cũ
 để vượt kiểm tra; giữ nguyên và tạo corpus theo contract mới. Downloader từ chối
 resume với contract khác. Chưa có download corpus lớn nào được thực hiện trong phiên sửa code này.
 
-Tensor thô 37,988 states x 27,031,680 bytes khoảng **1.027 TB**; dung lượng nén
+Tensor thô 37,988 states x 73,817,280 bytes khoảng **2.804 TB**; dung lượng nén
 phải đo trên dữ liệu đại diện. Dành thêm chỗ cho download tạm, statistics và nhiều
 checkpoint. Không dùng RAM/GPU memory để thay cho thiếu persistent disk.
 
 ```bash
-# Sample đã được tạo trong workspace này. Chỉ chạy download nếu chuyển sang máy mới chưa có sample.
-python data/test_download_sample.py --output data/dataset/era5_sample_audited.zarr
+# Tạo sample 71 kênh ở đường dẫn mới; sample 26 kênh cũ không tương thích.
+python data/test_download_sample.py --output data/dataset/era5_sample_0p5_71ch.zarr
 python data/download_data.py --confirm-full-download
 # Thư mục stats phải chưa tồn tại. Bảo quản bundle cũ dưới tên riêng trước bước này.
 python scripts/compute_stats.py --time-step 1
@@ -84,13 +91,14 @@ precision difference phù hợp với field scale và không có amplification b
 ở constant/near-constant diagnostics. `status=passed` chỉ nghĩa là smoke test chạy
 được; không chứng minh skill hay physical stability.
 
-M06 đã được tái hiện ở **full grid E128/L6 trên CPU**: constant input cho output
+M06 đã được tái hiện trong phép đo lịch sử ở **full grid E128/L6 trên CPU**:
+constant input cho output
 spatial std 2.2109. Bản sửa tách thành phần hằng trước quadrature:
 `SHT(x) = SHT(x-c) + c sqrt(4π) e00`, với anchored centering để residual của trường
 hằng bằng zero chính xác. Sau sửa, spatial std bằng 0; input ngẫu nhiên có output
 RMS difference khoảng 2.9e−6 so với upstream trên cùng weights. Không thêm parameters
 hoặc đổi epsilon. Có thêm centering/reduction và một tensor spatial tạm; cần đo peak
-CUDA theo preflight. Checkpoint/config ghi `stabilize_sht_constants=True`; tắt bằng
+CUDA cho baseline E192/71 kênh theo preflight. Checkpoint/config ghi `stabilize_sht_constants=True`; tắt bằng
 `--no-stabilize-sht-constants` chỉ cho ablation có chủ đích, không exact resume.
 
 Preflight chặn khi stabilized model không giữ trường hằng trong tolerance trên

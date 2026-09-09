@@ -7,22 +7,30 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from typing import Any, cast
+
 import numpy as np
 import xarray as xr
 
 root = Path.cwd()
+sys.path[:0] = [str(root), str(root / "src")]
+
+from configs.download_data_config import DEFAULT_SAMPLE_FILENAME, channel_names
+
 work = Path(tempfile.mkdtemp(prefix="nao-real-pilot-"))
 evidence = root / "audit/remediation"
-source_path = root / "data/dataset/era5_sample_audited.zarr"
+source_path = root / "data" / "dataset" / DEFAULT_SAMPLE_FILENAME
 with xr.open_zarr(source_path, consolidated=True) as source:
-    assert source.state.shape == (4, 26, 361, 720)
+    source_shape = tuple(int(size) for size in source.state.shape)
+    assert source_shape == (4, len(channel_names()), 361, 720)
+    assert tuple(str(value) for value in source.channel.values) == channel_names()
     assert all(str(unit).strip() for unit in source.channel_units.values)
     assert np.isfinite(source.state.values).all()
     source.isel(time=slice(0, 2)).to_zarr(
-        work / "train.zarr", mode="w", consolidated=True
+        cast(Any, str(work / "train.zarr")), mode="w", consolidated=True
     )
     source.isel(time=slice(2, 4)).to_zarr(
-        work / "valid.zarr", mode="w", consolidated=True
+        cast(Any, str(work / "valid.zarr")), mode="w", consolidated=True
     )
     units = source.channel_units.values.tolist()
 
@@ -93,7 +101,7 @@ result = {
     "scope": "real-data tiny-model learning sanity check; adjacent within-day validation is not independent forecast evidence",
     "source": str(source_path),
     "temporary_work_directory": str(work),
-    "shape": [4, 26, 361, 720],
+    "shape": list(source_shape),
     "channel_units": units,
     "model": "E8/L2, full 361x720 grid, stabilized SHT, CPU",
     "train_period": "2018-01-01 00:00 to 06:00",

@@ -24,11 +24,9 @@ from torch import Tensor
 from torch.optim import AdamW
 import xarray as xr
 
-from configs.download_data_config import (
-    DEFAULT_LEVEL_SELECTIONS,
-    DEFAULT_SURFACE_VARIABLES,
-)
+from configs.download_data_config import channel_names
 from configs.model_config import AtmosphereModelConfig
+from configs.pipeline_config import TrainingConfig
 from neural_atmosphere_operator.models.loss import latitude_weighted_mse
 from neural_atmosphere_operator.models.model import AtmosphereNeuralOperator
 from neural_atmosphere_operator.pipeline.runtime import choose_device, seed_everything
@@ -57,25 +55,14 @@ def load_real_states(path: Path, height: int, width: int) -> tuple[Tensor, Tenso
             "latitude": slice(None, None, latitude_stride),
             "longitude": slice(None, None, longitude_stride),
         }
-        if "state" in ds:
-            values = np.asarray(
-                ds["state"].isel(spatial_index).values, dtype=np.float32
+        if "state" not in ds:
+            raise ValueError(
+                "Dataset must contain the canonical flattened 71-channel state"
             )
-        else:
-            channels: list[np.ndarray] = []
-            for name in DEFAULT_SURFACE_VARIABLES:
-                channels.append(
-                    np.asarray(ds[name].isel(spatial_index).values, dtype=np.float32)
-                )
-            for name, levels in DEFAULT_LEVEL_SELECTIONS:
-                for level in levels:
-                    channels.append(
-                        np.asarray(
-                            ds[name].sel(level=level).isel(spatial_index).values,
-                            dtype=np.float32,
-                        )
-                    )
-            values = np.stack(channels, axis=1)
+        stored_channels = tuple(str(value) for value in ds.channel.values)
+        if stored_channels != channel_names():
+            raise ValueError("Stored state channels do not match the 71-channel contract")
+        values = np.asarray(ds["state"].isel(spatial_index).values, dtype=np.float32)
         latitudes = np.asarray(
             ds.latitude.isel({"latitude": spatial_index["latitude"]}).values,
             dtype=np.float32,
@@ -191,22 +178,36 @@ def benchmark_profile(
 
 
 def main() -> None:
+    model_defaults = AtmosphereModelConfig()
+    training_defaults = TrainingConfig()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--data",
         type=Path,
-        default=PROJECT_ROOT / "data" / "dataset" / "era5_sample_0p5_26ch.zarr",
+        default=PROJECT_ROOT / "data" / "dataset" / "era5_sample_0p5_71ch.zarr",
     )
     parser.add_argument(
         "--device", choices=("auto", "cpu", "mps", "cuda"), default="auto"
     )
     parser.add_argument("--height", type=int, default=61)
     parser.add_argument("--width", type=int, default=120)
-    parser.add_argument("--embed-dims", type=int, nargs="+", default=(96, 128, 160))
-    parser.add_argument("--num-layers", type=int, default=6)
-    parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument(
+        "--embed-dims",
+        type=int,
+        nargs="+",
+        default=(model_defaults.embed_dim,),
+        help="Embedding widths to benchmark; defaults to the current E192 baseline",
+    )
+    parser.add_argument(
+        "--num-layers", type=int, default=model_defaults.num_layers
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=training_defaults.batch_size
+    )
     parser.add_argument("--steps", type=int, default=5)
-    parser.add_argument("--learning-rate", type=float, default=1e-3)
+    parser.add_argument(
+        "--learning-rate", type=float, default=training_defaults.learning_rate
+    )
     parser.add_argument("--seeds", type=int, nargs="+", default=(17, 42, 73))
     args = parser.parse_args()
     if (
